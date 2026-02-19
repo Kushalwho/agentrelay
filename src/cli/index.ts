@@ -12,7 +12,14 @@ import { buildResumePrompt } from "../core/prompt-builder.js";
 import { AGENT_REGISTRY, getUsableTokenBudget } from "../core/registry.js";
 import { Watcher } from "../core/watcher.js";
 import type { AgentId, WatcherEvent } from "../types/index.js";
-import { resolveOutputPath } from "./utils.js";
+import {
+  resolveOutputPath,
+  relativeTime,
+  formatBox,
+  formatErrorBox,
+  hint,
+  banner,
+} from "./utils.js";
 
 // --- verbose logger ---
 let verbose = false;
@@ -29,7 +36,211 @@ program
   .description(
     "Capture your AI coding agent session and continue in a different agent."
   )
-  .version("0.3.0");
+  .version("0.4.0");
+
+// --- runHandoff (extracted for default command) ---
+async function runHandoff(options: {
+  source?: string;
+  target?: string;
+  session?: string;
+  project?: string;
+  tokens?: string;
+  dryRun?: boolean;
+  clipboard?: boolean;
+  output?: string;
+  verbose?: boolean;
+}) {
+  try {
+    if (options.verbose) verbose = true;
+    const projectPath = options.project || process.cwd();
+    debug("Project path:", projectPath);
+
+    // 1. Determine source adapter
+    let spinner = ora("Finding your AI agent...").start();
+    let adapter;
+    if (options.source) {
+      debug("Using explicit source:", options.source);
+      adapter = getAdapter(options.source as AgentId);
+      if (!adapter) {
+        spinner.fail(`Unknown source agent: ${options.source}`);
+        process.exit(1);
+      }
+      spinner.succeed(`Source: ${adapter.agentId}`);
+    } else {
+      debug("Auto-detecting source agent...");
+      adapter = await autoDetectSource(projectPath);
+      if (!adapter) {
+        spinner.fail("No agent detected");
+        console.log();
+        console.log(
+          formatErrorBox(
+            [
+              `${chalk.red.bold("No agent detected")}`,
+              "",
+              "Braindump couldn't find any AI",
+              "coding agents on your system.",
+              "",
+              "Supported agents:",
+              `  ${chalk.dim("•")} Claude Code ${chalk.dim("(~/.claude/projects/)")}`,
+              `  ${chalk.dim("•")} Cursor ${chalk.dim("(~/.config/Cursor/...)")}`,
+              `  ${chalk.dim("•")} Codex CLI ${chalk.dim("(~/.codex/sessions/)")}`,
+              "",
+              "Install one and try again.",
+            ].join("\n")
+          )
+        );
+        process.exit(1);
+      }
+      spinner.succeed(`Source: ${adapter.agentId}`);
+    }
+
+    // 2. Capture session
+    let session;
+    spinner = ora("Reading conversation history...").start();
+    try {
+      if (options.session) {
+        session = await adapter.capture(options.session);
+      } else {
+        session = await adapter.captureLatest(projectPath);
+      }
+      spinner.succeed(`Captured ${session.conversation.messageCount} messages`);
+      debug("Session ID:", session.sessionId);
+      debug("Estimated tokens:", session.conversation.estimatedTokens);
+    } catch (err) {
+      spinner.fail("Failed to capture session");
+      console.error((err as Error).message);
+      process.exit(3);
+    }
+
+    // 3. Enrich with project context (git, tree, memory files)
+    spinner = ora("Adding project context (git, files)...").start();
+    const context = await extractProjectContext(projectPath);
+    session.project = { ...session.project, ...context };
+    debug("Git branch:", context.gitBranch || "none");
+    debug("Memory files:", context.memoryFileContents ? "found" : "none");
+    spinner.succeed("Project context enriched");
+
+    // 4. Compress
+    const targetTokens = options.tokens
+      ? parseInt(options.tokens, 10)
+      : undefined;
+    const target = (options.target as AgentId | "clipboard" | "file") || "file";
+    debug("Target:", target, "| Token budget:", targetTokens || "auto");
+    spinner = ora("Optimizing for target agent...").start();
+    const compressed = compress(session, { targetTokens, targetAgent: target });
+    spinner.succeed(`Compressed to ${compressed.totalTokens} tokens`);
+    debug("Included layers:", compressed.includedLayers.join(", "));
+    if (compressed.droppedLayers.length > 0) {
+      debug("Dropped layers:", compressed.droppedLayers.join(", "));
+    }
+
+    // 5. Build resume prompt
+    const resume = buildResumePrompt(session, compressed, target);
+
+    // 6. Print results
+    const budget = targetTokens || getUsableTokenBudget(target);
+    const pct = Math.round((compressed.totalTokens / budget) * 100);
+
+    if (options.dryRun) {
+      const lines = [
+        `${chalk.yellow.bold("Dry run — no files written")}`,
+        "",
+        `${chalk.dim("Source:")}     ${adapter.agentId}`,
+        `${chalk.dim("Session:")}    ${session.sessionId.slice(0, 12)}`,
+        `${chalk.dim("Branch:")}     ${session.project.gitBranch || "unknown"}`,
+        `${chalk.dim("Messages:")}   ${session.conversation.messageCount}`,
+        `${chalk.dim("Tokens:")}     ${compressed.totalTokens} / ${budget} ${chalk.dim(`(${pct}%)`)}`,
+        `${chalk.dim("Included:")}   ${compressed.includedLayers.join(", ")}`,
+      ];
+      if (compressed.droppedLayers.length > 0) {
+        lines.push(
+          `${chalk.dim("Dropped:")}    ${chalk.yellow(compressed.droppedLayers.join(", "))}`
+        );
+      }
+      lines.push(`${chalk.dim("Target:")}     ${target}`);
+      lines.push(`${chalk.dim("Resume:")}     ${resume.length} chars`);
+      console.log();
+      console.log(
+        formatBox(lines.join("\n"))
+      );
+      console.log();
+      return;
+    }
+
+    // 7. Write to .handoff/ (or custom --output path)
+    spinner = ora("Saving handoff files...").start();
+    const { resumePath: outputPath, sessionDir } = resolveOutputPath(options.output, projectPath);
+    mkdirSync(sessionDir, { recursive: true });
+    debug("Output path:", outputPath);
+    debug("Session dir:", sessionDir);
+    writeFileSync(outputPath, resume);
+    writeFileSync(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
+
+    // 8. Try clipboard copy (unless --no-clipboard)
+    let clipboardOk = false;
+    if (options.clipboard !== false) {
+      try {
+        const { default: clipboard } = await import("clipboardy");
+        await clipboard.write(resume);
+        clipboardOk = true;
+      } catch {
+        debug("Clipboard not available — skipping copy");
+      }
+    } else {
+      debug("Clipboard copy skipped (--no-clipboard)");
+    }
+    spinner.succeed(`Written to ${outputPath}`);
+
+    // Build summary lines
+    const summaryLines = [
+      `${chalk.green.bold("Handoff complete!")}`,
+      "",
+      `${chalk.dim("Source:")}     ${adapter.agentId}`,
+      `${chalk.dim("Session:")}    ${session.sessionId.slice(0, 12)}`,
+      `${chalk.dim("Branch:")}     ${session.project.gitBranch || "unknown"}`,
+      `${chalk.dim("Messages:")}   ${session.conversation.messageCount}`,
+      `${chalk.dim("Tokens:")}     ${compressed.totalTokens} / ${budget} ${chalk.dim(`(${pct}%)`)}`,
+    ];
+    if (verbose && compressed.includedLayers.length > 0) {
+      summaryLines.push(
+        `${chalk.dim("Included:")}   ${compressed.includedLayers.join(", ")}`
+      );
+    }
+    if (verbose && compressed.droppedLayers.length > 0) {
+      summaryLines.push(
+        `${chalk.dim("Dropped:")}    ${chalk.yellow(compressed.droppedLayers.join(", "))}`
+      );
+    }
+    summaryLines.push(`${chalk.dim("Output:")}     ${outputPath}`);
+    if (options.clipboard === false) {
+      summaryLines.push(`${chalk.dim("Clipboard:")}  ${chalk.dim("skipped")}`);
+    } else if (clipboardOk) {
+      summaryLines.push(`${chalk.dim("Clipboard:")}  ${chalk.green("copied!")}`);
+    } else {
+      summaryLines.push(
+        `${chalk.dim("Clipboard:")}  ${chalk.yellow("unavailable")} ${chalk.dim("(copy .handoff/RESUME.md manually)")}`
+      );
+    }
+
+    console.log();
+    console.log(formatBox(summaryLines.join("\n")));
+    console.log();
+    console.log(`  ${hint("Paste the clipboard into your target agent to continue")}`);
+    console.log();
+  } catch (err) {
+    console.log();
+    console.log(
+      formatErrorBox(
+        [
+          `${chalk.red.bold("Handoff failed")}`,
+          "",
+          (err as Error).message,
+        ].join("\n")
+      )
+    );
+    process.exit(3);
+  }
+}
 
 // --- detect ---
 program
@@ -48,11 +259,38 @@ program
       }
       console.log();
       if (!results.some((r) => r.detected)) {
-        console.log(chalk.yellow("No agents detected. Install Claude Code, Cursor, or Codex CLI."));
+        console.log(
+          formatErrorBox(
+            [
+              `${chalk.red.bold("No agent detected")}`,
+              "",
+              "Braindump couldn't find any AI",
+              "coding agents on your system.",
+              "",
+              "Supported agents:",
+              `  ${chalk.dim("•")} Claude Code ${chalk.dim("(~/.claude/projects/)")}`,
+              `  ${chalk.dim("•")} Cursor ${chalk.dim("(~/.config/Cursor/...)")}`,
+              `  ${chalk.dim("•")} Codex CLI ${chalk.dim("(~/.codex/sessions/)")}`,
+              "",
+              "Install one and try again.",
+            ].join("\n")
+          )
+        );
         process.exit(1);
       }
+      console.log(`  ${hint("Run 'braindump' to create a handoff")}`);
+      console.log();
     } catch (err) {
-      console.error(chalk.red("Failed to detect agents:"), (err as Error).message);
+      console.log();
+      console.log(
+        formatErrorBox(
+          [
+            `${chalk.red.bold("Failed to detect agents")}`,
+            "",
+            (err as Error).message,
+          ].join("\n")
+        )
+      );
       process.exit(1);
     }
   });
@@ -84,16 +322,21 @@ program
 
         if (sessions.length === 0) continue;
 
-        console.log(`\n  ${chalk.bold(AGENT_REGISTRY[agentId].name)}:`);
+        console.log();
+        console.log(`  ${chalk.bold("Recent Sessions")}`);
+        console.log();
+        console.log(`  ${chalk.bold(AGENT_REGISTRY[agentId].name)}`);
         const toShow = sessions.slice(0, limit - totalShown);
-        for (const s of toShow) {
+        for (let i = 0; i < toShow.length; i++) {
+          const s = toShow[i];
+          const isLast = i === toShow.length - 1;
+          const prefix = isLast ? "  └─" : "  ├─";
           const idShort = chalk.cyan(s.id.slice(0, 12));
-          const date = chalk.dim(s.lastActiveAt || s.startedAt || "unknown");
-          const msgs = s.messageCount != null ? chalk.yellow(`(${s.messageCount} msgs)`) : "";
-          console.log(`    ${idShort}  ${date}  ${msgs}`);
-          if (s.preview) {
-            console.log(`    ${chalk.dim("└─")} ${s.preview.substring(0, 80)}`);
-          }
+          const time = s.lastActiveAt || s.startedAt
+            ? chalk.dim(relativeTime(s.lastActiveAt || s.startedAt || ""))
+            : chalk.dim("unknown");
+          const msgs = s.messageCount != null ? chalk.yellow(`${s.messageCount} msgs`) : "";
+          console.log(`  ${prefix} ${idShort}  ${time}   ${msgs}`);
           totalShown++;
         }
         if (totalShown >= limit) break;
@@ -102,9 +345,21 @@ program
 
       if (totalShown === 0) {
         console.log(chalk.yellow("No sessions found."));
+      } else {
+        console.log(`  ${hint("Run 'braindump --session <id>' to handoff a specific session")}`);
+        console.log();
       }
     } catch (err) {
-      console.error(chalk.red("Failed to list sessions:"), (err as Error).message);
+      console.log();
+      console.log(
+        formatErrorBox(
+          [
+            `${chalk.red.bold("Failed to list sessions")}`,
+            "",
+            (err as Error).message,
+          ].join("\n")
+        )
+      );
       process.exit(2);
     }
   });
@@ -123,44 +378,70 @@ program
       const projectPath = options.project || process.cwd();
 
       // 1. Detect source
-      let spinner = ora("Detecting source agent...").start();
+      let spinner = ora("Finding your AI agent...").start();
       const adapter = options.source
         ? getAdapter(options.source as AgentId)
         : await autoDetectSource(projectPath);
 
       if (!adapter) {
-        spinner.fail("No agent detected.");
-        console.error("Use --source to specify one.");
+        spinner.fail("No agent detected");
+        console.log();
+        console.log(
+          formatErrorBox(
+            [
+              `${chalk.red.bold("No agent detected")}`,
+              "",
+              "Use --source to specify one.",
+            ].join("\n")
+          )
+        );
         process.exit(1);
       }
       spinner.succeed(`Source: ${adapter.agentId}`);
 
       // 2. Capture session
-      spinner = ora("Capturing session...").start();
+      spinner = ora("Reading conversation history...").start();
       const session = options.session
         ? await adapter.capture(options.session)
         : await adapter.captureLatest(projectPath);
       spinner.succeed(`Captured ${session.conversation.messageCount} messages`);
 
       // 3. Enrich with project context
-      spinner = ora("Enriching with project context...").start();
+      spinner = ora("Adding project context (git, files)...").start();
       const context = await extractProjectContext(projectPath);
       session.project = { ...session.project, ...context };
       spinner.succeed("Project context enriched");
 
       // 4. Write output
-      spinner = ora("Writing session file...").start();
+      spinner = ora("Saving session file...").start();
       const handoffDir = join(projectPath, ".handoff");
       mkdirSync(handoffDir, { recursive: true });
       writeFileSync(join(handoffDir, "session.json"), JSON.stringify(session, null, 2));
       spinner.succeed(`Written to ${join(handoffDir, "session.json")}`);
 
+      const summaryLines = [
+        `${chalk.green.bold("Capture complete!")}`,
+        "",
+        `${chalk.dim("Messages:")}  ${session.conversation.messageCount}`,
+        `${chalk.dim("Tokens:")}    ~${session.conversation.estimatedTokens}`,
+      ];
+
       console.log();
-      console.log(`  ${chalk.dim("Messages:")}  ${session.conversation.messageCount}`);
-      console.log(`  ${chalk.dim("Tokens:")}    ~${session.conversation.estimatedTokens}`);
+      console.log(formatBox(summaryLines.join("\n")));
+      console.log();
+      console.log(`  ${hint("Run 'braindump resume' to generate RESUME.md")}`);
       console.log();
     } catch (err) {
-      console.error(chalk.red("Capture error:"), (err as Error).message);
+      console.log();
+      console.log(
+        formatErrorBox(
+          [
+            `${chalk.red.bold("Capture failed")}`,
+            "",
+            (err as Error).message,
+          ].join("\n")
+        )
+      );
       process.exit(3);
     }
   });
@@ -179,148 +460,7 @@ program
   .option("-o, --output <path>", "Custom output path for RESUME.md")
   .option("-v, --verbose", "Show detailed debug output")
   .action(async (options) => {
-    try {
-      if (options.verbose) verbose = true;
-      const projectPath = options.project || process.cwd();
-      debug("Project path:", projectPath);
-
-      // 1. Determine source adapter
-      let spinner = ora("Detecting source agent...").start();
-      let adapter;
-      if (options.source) {
-        debug("Using explicit source:", options.source);
-        adapter = getAdapter(options.source as AgentId);
-        if (!adapter) {
-          spinner.fail(`Unknown source agent: ${options.source}`);
-          process.exit(1);
-        }
-        spinner.succeed(`Source: ${adapter.agentId}`);
-      } else {
-        debug("Auto-detecting source agent...");
-        adapter = await autoDetectSource(projectPath);
-        if (!adapter) {
-          spinner.fail("No source agent detected.");
-          console.error("Use --source to specify one.");
-          process.exit(1);
-        }
-        spinner.succeed(`Source: ${adapter.agentId}`);
-      }
-
-      // 2. Capture session
-      let session;
-      spinner = ora("Capturing session...").start();
-      try {
-        if (options.session) {
-          session = await adapter.capture(options.session);
-        } else {
-          session = await adapter.captureLatest(projectPath);
-        }
-        spinner.succeed(`Captured ${session.conversation.messageCount} messages`);
-        debug("Session ID:", session.sessionId);
-        debug("Estimated tokens:", session.conversation.estimatedTokens);
-      } catch (err) {
-        spinner.fail("Failed to capture session");
-        console.error((err as Error).message);
-        process.exit(3);
-      }
-
-      // 3. Enrich with project context (git, tree, memory files)
-      spinner = ora("Enriching with project context...").start();
-      const context = await extractProjectContext(projectPath);
-      session.project = { ...session.project, ...context };
-      debug("Git branch:", context.gitBranch || "none");
-      debug("Memory files:", context.memoryFileContents ? "found" : "none");
-      spinner.succeed("Project context enriched");
-
-      // 4. Compress
-      const targetTokens = options.tokens
-        ? parseInt(options.tokens, 10)
-        : undefined;
-      const target = (options.target as AgentId | "clipboard" | "file") || "file";
-      debug("Target:", target, "| Token budget:", targetTokens || "auto");
-      spinner = ora("Compressing...").start();
-      const compressed = compress(session, { targetTokens, targetAgent: target });
-      spinner.succeed(`Compressed to ${compressed.totalTokens} tokens`);
-      debug("Included layers:", compressed.includedLayers.join(", "));
-      if (compressed.droppedLayers.length > 0) {
-        debug("Dropped layers:", compressed.droppedLayers.join(", "));
-      }
-
-      // 5. Build resume prompt
-      const resume = buildResumePrompt(session, compressed, target);
-
-      // 6. Print results
-      const budget = targetTokens || getUsableTokenBudget(target);
-      const pct = Math.round((compressed.totalTokens / budget) * 100);
-
-      if (options.dryRun) {
-        console.log();
-        console.log(chalk.yellow.bold("  Dry run — no files written"));
-        console.log();
-        console.log(`  ${chalk.dim("Source:")}     ${adapter.agentId}`);
-        console.log(`  ${chalk.dim("Session:")}    ${session.sessionId.slice(0, 12)}`);
-        console.log(`  ${chalk.dim("Branch:")}     ${session.project.gitBranch || "unknown"}`);
-        console.log(`  ${chalk.dim("Messages:")}   ${session.conversation.messageCount}`);
-        console.log(`  ${chalk.dim("Tokens:")}     ${compressed.totalTokens} / ${budget} ${chalk.dim(`(${pct}%)`)}`);
-        console.log(`  ${chalk.dim("Included:")}   ${compressed.includedLayers.join(", ")}`);
-        if (compressed.droppedLayers.length > 0) {
-          console.log(`  ${chalk.dim("Dropped:")}    ${chalk.yellow(compressed.droppedLayers.join(", "))}`);
-        }
-        console.log(`  ${chalk.dim("Target:")}     ${target}`);
-        console.log(`  ${chalk.dim("Resume:")}     ${resume.length} chars`);
-        console.log();
-        return;
-      }
-
-      // 7. Write to .handoff/ (or custom --output path)
-      spinner = ora("Writing handoff files...").start();
-      const { resumePath: outputPath, sessionDir } = resolveOutputPath(options.output, projectPath);
-      mkdirSync(sessionDir, { recursive: true });
-      debug("Output path:", outputPath);
-      debug("Session dir:", sessionDir);
-      writeFileSync(outputPath, resume);
-      writeFileSync(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
-
-      // 8. Try clipboard copy (unless --no-clipboard)
-      let clipboardOk = false;
-      if (options.clipboard !== false) {
-        try {
-          const { default: clipboard } = await import("clipboardy");
-          await clipboard.write(resume);
-          clipboardOk = true;
-        } catch {
-          debug("Clipboard not available — skipping copy");
-        }
-      } else {
-        debug("Clipboard copy skipped (--no-clipboard)");
-      }
-      spinner.succeed(`Written to ${outputPath}`);
-
-      console.log();
-      console.log(chalk.green.bold("  Handoff complete!"));
-      console.log();
-      console.log(`  ${chalk.dim("Source:")}     ${adapter.agentId}`);
-      console.log(`  ${chalk.dim("Session:")}    ${session.sessionId.slice(0, 12)}`);
-      console.log(`  ${chalk.dim("Branch:")}     ${session.project.gitBranch || "unknown"}`);
-      console.log(`  ${chalk.dim("Messages:")}   ${session.conversation.messageCount}`);
-      console.log(`  ${chalk.dim("Tokens:")}     ${compressed.totalTokens} / ${budget} ${chalk.dim(`(${pct}%)`)}`);
-      console.log(`  ${chalk.dim("Included:")}   ${compressed.includedLayers.join(", ")}`);
-      if (compressed.droppedLayers.length > 0) {
-        console.log(`  ${chalk.dim("Dropped:")}    ${chalk.yellow(compressed.droppedLayers.join(", "))}`);
-      }
-      console.log(`  ${chalk.dim("Output:")}     ${outputPath}`);
-      if (options.clipboard === false) {
-        console.log(`  ${chalk.dim("Clipboard:")}  ${chalk.dim("skipped")}`);
-      } else if (clipboardOk) {
-        console.log(`  ${chalk.dim("Clipboard:")}  ${chalk.green("copied!")}`);
-      } else {
-        console.log(`  ${chalk.dim("Clipboard:")}  ${chalk.yellow("unavailable")} ${chalk.dim("(copy .handoff/RESUME.md manually)")}`);
-      }
-      console.log();
-    } catch (err) {
-      console.error(chalk.red("Handoff failed:"), (err as Error).message);
-      process.exit(3);
-    }
+    await runHandoff(options);
   });
 
 // --- watch ---
@@ -401,8 +541,19 @@ program
     try {
       const filePath = options.file || join(process.cwd(), ".handoff", "session.json");
       if (!existsSync(filePath)) {
-        console.error(chalk.red("File not found:"), filePath);
-        console.error(chalk.dim("Run 'braindump capture' first, or use --file to specify a path."));
+        console.log();
+        console.log(
+          formatErrorBox(
+            [
+              `${chalk.red.bold("File not found")}`,
+              "",
+              filePath,
+              "",
+              "Run 'braindump capture' first,",
+              "or use --file to specify a path.",
+            ].join("\n")
+          )
+        );
         process.exit(1);
       }
       console.log(chalk.dim(`Reading ${filePath}...`));
@@ -420,10 +571,29 @@ program
       const outputPath = join(handoffDir, "RESUME.md");
       writeFileSync(outputPath, resume);
 
-      console.log(chalk.green("Resume regenerated:"), `${compressed.totalTokens} tokens`);
-      console.log(chalk.dim(`Written to ${outputPath}`));
+      const summaryLines = [
+        `${chalk.green.bold("Resume regenerated!")}`,
+        "",
+        `${chalk.dim("Tokens:")}  ${compressed.totalTokens}`,
+        `${chalk.dim("Output:")}  ${outputPath}`,
+      ];
+
+      console.log();
+      console.log(formatBox(summaryLines.join("\n")));
+      console.log();
+      console.log(`  ${hint("Paste RESUME.md into your target agent to continue")}`);
+      console.log();
     } catch (err) {
-      console.error(chalk.red("Resume error:"), (err as Error).message);
+      console.log();
+      console.log(
+        formatErrorBox(
+          [
+            `${chalk.red.bold("Resume failed")}`,
+            "",
+            (err as Error).message,
+          ].join("\n")
+        )
+      );
       process.exit(3);
     }
   });
@@ -433,10 +603,9 @@ program
   .command("info")
   .description("Show agent storage paths, context window sizes, and config")
   .action(async () => {
-    const platform = process.platform as string;
-    console.log(`\n  ${chalk.bold("Braindump")} ${chalk.dim("v0.3.0")} ${chalk.dim(`(${platform})`)}\n`);
+    console.log(banner("0.4.0"));
     for (const meta of Object.values(AGENT_REGISTRY)) {
-      const storagePath = meta.storagePaths[platform] || "N/A";
+      const storagePath = meta.storagePaths[process.platform] || "N/A";
       console.log(`  ${chalk.bold(meta.name)} ${chalk.dim(`(${meta.id})`)}`);
       console.log(`    ${chalk.dim("Storage:")}        ${storagePath}`);
       console.log(`    ${chalk.dim("Context window:")} ${meta.contextWindow.toLocaleString()} tokens`);
@@ -446,4 +615,31 @@ program
     }
   });
 
-program.parse();
+// --- default: run handoff when no subcommand given ---
+const args = process.argv.slice(2);
+const subcommands = program.commands.map((c) => c.name());
+const hasSubcommand = args.length > 0 && subcommands.includes(args[0]);
+const hasHelpOrVersion = args.includes("--help") || args.includes("-h") || args.includes("--version") || args.includes("-V");
+
+if (args.length === 0) {
+  // No args at all — run handoff as default
+  runHandoff({});
+} else if (!hasSubcommand && !hasHelpOrVersion) {
+  // Has flags but no subcommand — treat as handoff flags
+  // Parse known handoff options from args
+  const handoffCmd = new Command();
+  handoffCmd
+    .option("-s, --source <agent>")
+    .option("-t, --target <target>")
+    .option("--session <id>")
+    .option("-p, --project <path>")
+    .option("--tokens <n>")
+    .option("--dry-run")
+    .option("--no-clipboard")
+    .option("-o, --output <path>")
+    .option("-v, --verbose");
+  handoffCmd.parse(["node", "braindump", ...args]);
+  runHandoff(handoffCmd.opts());
+} else {
+  program.parse();
+}
