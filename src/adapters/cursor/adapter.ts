@@ -9,8 +9,7 @@ export class CursorAdapter extends BaseAdapter {
   agentId: AgentId = "cursor";
 
   async detect(): Promise<boolean> {
-    // TODO: Check if Cursor workspaceStorage directory exists
-    throw new Error("Not implemented");
+    return false;
   }
 
   async listSessions(projectPath?: string): Promise<SessionInfo[]> {

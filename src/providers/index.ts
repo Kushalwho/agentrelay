@@ -9,9 +9,15 @@ import { AgentProvider } from "./agent-provider.js";
 export function getProviders(
   target: AgentId | "clipboard" | "file"
 ): ResumeProvider[] {
-  // TODO: Return appropriate providers based on target
-  // Default: file + clipboard
-  throw new Error("Not implemented");
+  switch (target) {
+    case "file":
+      return [new FileProvider()];
+    case "clipboard":
+      return [new ClipboardProvider()];
+    default:
+      // Agent ID target — use both file and clipboard (belt and suspenders)
+      return [new FileProvider(), new ClipboardProvider()];
+  }
 }
 
 export { FileProvider, ClipboardProvider, AgentProvider };

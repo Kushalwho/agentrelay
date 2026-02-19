@@ -1,3 +1,4 @@
+import clipboard from "clipboardy";
 import type { ResumeProvider, ProviderOptions } from "../types/index.js";
 
 /**
@@ -5,7 +6,13 @@ import type { ResumeProvider, ProviderOptions } from "../types/index.js";
  */
 export class ClipboardProvider implements ResumeProvider {
   async deliver(content: string, options?: ProviderOptions): Promise<void> {
-    // TODO: Use clipboardy to copy content to clipboard
-    throw new Error("Not implemented");
+    try {
+      await clipboard.write(content);
+    } catch (error) {
+      console.warn(
+        "Clipboard not available — skipping clipboard copy.",
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 }

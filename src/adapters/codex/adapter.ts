@@ -9,8 +9,7 @@ export class CodexAdapter extends BaseAdapter {
   agentId: AgentId = "codex";
 
   async detect(): Promise<boolean> {
-    // TODO: Check if ~/.codex/sessions/ exists
-    throw new Error("Not implemented");
+    return false;
   }
 
   async listSessions(projectPath?: string): Promise<SessionInfo[]> {
