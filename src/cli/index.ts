@@ -25,7 +25,7 @@ function debug(...args: unknown[]) {
 const program = new Command();
 
 program
-  .name("agentrelay")
+  .name("braindump")
   .description(
     "Capture your AI coding agent session and continue in a different agent."
   )
@@ -350,7 +350,7 @@ program
           console.log(`  ${time} ${chalk.blue("~")} ${agent}${sid} ${chalk.dim(event.details || "updated")}`);
           break;
         case "rate-limit":
-          console.log(`  ${time} ${chalk.red("!")} ${agent}${sid} ${chalk.red("possible rate limit")} — run ${chalk.bold("agentrelay handoff")} to switch`);
+          console.log(`  ${time} ${chalk.red("!")} ${agent}${sid} ${chalk.red("possible rate limit")} — run ${chalk.bold("braindump handoff")} to switch`);
           break;
         case "idle":
           break; // Don't spam idle events

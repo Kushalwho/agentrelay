@@ -1,10 +1,11 @@
 {
-  "name": "agentrelay",
+  "name": "braindump",
   "version": "0.3.0",
   "description": "A CLI tool that captures your AI coding agent session and generates a portable resume prompt so you can seamlessly continue in a different agent.",
   "type": "module",
   "main": "dist/cli/index.js",
   "bin": {
+    "braindump": "dist/cli/index.js",
     "agentrelay": "dist/cli/index.js"
   },
   "scripts": {
@@ -25,7 +26,8 @@
     "cli",
     "context",
     "session",
-    "relay"
+    "relay",
+    "braindump"
   ],
   "author": "Prateek Choudhary <prtkworks@gmail.com>",
   "license": "MIT",
