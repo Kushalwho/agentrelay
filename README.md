@@ -10,9 +10,9 @@ AI coding agents are context silos. When your session hits a rate limit or runs 
 
 | Agent | Status |
 |-------|--------|
-| Claude Code | Working (MVP) |
-| Cursor | In progress (v0.2) |
-| Codex CLI | In progress (v0.2) |
+| Claude Code | Working |
+| Cursor | Working |
+| Codex CLI | Working |
 
 ## Installation
 
@@ -37,6 +37,9 @@ agentrelay detect
 # Full handoff — capture, compress, generate resume prompt
 agentrelay handoff
 
+# Target a specific agent for the resume format
+agentrelay handoff --target cursor
+
 # The resume prompt is in .handoff/RESUME.md and on your clipboard
 # Paste it into your target agent and keep working
 ```
@@ -47,7 +50,7 @@ agentrelay handoff
 agentrelay detect                         Scan for installed agents
 agentrelay list [--source <agent>]        List recent sessions
 agentrelay capture [--source <agent>]     Capture session to .handoff/session.json
-agentrelay handoff [options]              Full pipeline: capture → compress → resume
+agentrelay handoff [options]              Full pipeline: capture -> compress -> resume
 agentrelay resume [--file <path>]         Re-generate resume from captured session
 agentrelay info                           Show agent paths and config
 ```
@@ -62,21 +65,32 @@ agentrelay info                           Show agent paths and config
 --tokens <n>            Token budget override. Default: based on target agent.
 ```
 
+### Target-Specific Hints
+
+When you specify `--target`, the resume prompt includes agent-specific instructions:
+
+| Target | Hint |
+|--------|------|
+| `cursor` | "Paste this into Cursor's Composer to continue." |
+| `codex` | "Feed this to Codex CLI with `codex resume` or paste it." |
+| `claude-code` | "Paste this into a new Claude Code session to continue." |
+
 ## How It Works
 
 ```
-┌─────────────────┐    ┌──────────────┐    ┌─────────────────┐    ┌──────────────┐
-│  Claude Code    │    │   Capture    │    │   Compress      │    │  RESUME.md   │
-│  JSONL session  │ -> │  + Normalize │ -> │  (7 priority    │ -> │  + clipboard │
-│                 │    │              │    │   layers)       │    │              │
-└─────────────────┘    └──────────────┘    └─────────────────┘    └──────────────┘
++-----------------+    +--------------+    +-----------------+    +--------------+
+|  Agent Session  |    |   Capture    |    |   Compress      |    |  RESUME.md   |
+|  (JSONL/SQLite) | -> |  + Analyze   | -> |  (7 priority    | -> |  + clipboard |
+|                 |    |  + Enrich    |    |   layers)       |    |              |
++-----------------+    +--------------+    +-----------------+    +--------------+
 ```
 
-1. **Capture** — Reads Claude Code's JSONL session files from `~/.claude/projects/`
-2. **Normalize** — Converts to a portable `CapturedSession` format
-3. **Compress** — Priority-layered compression to fit any context window
-4. **Generate** — Builds a self-summarizing resume prompt that tells the new agent to pick up exactly where the last one left off
-5. **Deliver** — Writes to `.handoff/RESUME.md` and copies to clipboard
+1. **Capture** -- Reads session data from the agent's native storage (JSONL for Claude Code/Codex, SQLite for Cursor)
+2. **Analyze** -- Extracts task state, decisions, blockers, and completed steps from the conversation
+3. **Enrich** -- Adds project context: git branch/status/log, directory tree, memory files
+4. **Compress** -- Priority-layered compression to fit any context window
+5. **Generate** -- Builds a self-summarizing resume prompt that tells the new agent to pick up exactly where the last one left off
+6. **Deliver** -- Writes to `.handoff/RESUME.md` and copies to clipboard
 
 ## Compression Priority Layers
 
@@ -107,8 +121,8 @@ npm run build            # Build to dist/
 src/
 ├── adapters/                  # Agent-specific session readers
 │   ├── claude-code/adapter.ts # JSONL parser for ~/.claude/projects/
-│   ├── cursor/adapter.ts      # SQLite reader (planned)
-│   └── codex/adapter.ts       # JSONL parser (planned)
+│   ├── cursor/adapter.ts      # SQLite reader for Cursor workspaceStorage
+│   └── codex/adapter.ts       # JSONL parser for ~/.codex/sessions/
 ├── core/
 │   ├── compression.ts         # Priority-layered compression engine
 │   ├── conversation-analyzer.ts # Extracts tasks, decisions, blockers
@@ -124,6 +138,15 @@ src/
 ├── types/index.ts             # All TypeScript interfaces
 └── cli/index.ts               # Commander.js CLI entry point
 ```
+
+## Tests
+
+63 tests passing across 7 test files:
+- Adapter tests (Claude Code, Cursor, Codex) with real JSONL/SQLite parsing
+- Compression engine tests across all priority layers
+- Conversation analyzer tests
+- Prompt builder tests including target-agent hints
+- End-to-end handoff flow integration tests
 
 ## CI
 

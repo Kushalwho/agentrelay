@@ -1,126 +1,140 @@
-# AgentRelay — Kushal's Task Sheet (Round 3)
+# AgentRelay — Kushal's Task Sheet (Round 4)
 
 ## Status
 
-Rounds 1 and 2 are merged (PRs #2 and #4). MVP is fully working — `agentrelay handoff` captures from Claude Code, enriches with project context, extracts decisions/blockers/tasks, compresses, and generates RESUME.md.
+Rounds 1-3 are merged (PRs #2, #4, #6). All 3 adapters working, 63 tests passing. The core pipeline is complete.
 
-**Round 3 goal:** Add Cursor and Codex adapters so AgentRelay works with all 3 agents (v0.2 milestone from PRD).
+**Round 4 goal:** Implement the `watch` command — a background watcher that monitors agent session directories for changes (new messages, rate limit signals) and can trigger automatic handoffs. This is the last major feature before v0.2.0 ships.
 
-## Your Branch: `feat/cursor-codex-adapters`
+## Your Branch: `feat/watcher`
 
 ```bash
 git checkout main
 git pull origin main
 npm install
-git checkout -b feat/cursor-codex-adapters
+git checkout -b feat/watcher
 ```
 
 ---
 
 ## Context: What exists now
 
-- `src/adapters/claude-code/adapter.ts` — Full working adapter (your Round 1+2 work)
-- `src/adapters/cursor/adapter.ts` — Stub, all methods throw "Not implemented"
-- `src/adapters/codex/adapter.ts` — Stub, all methods throw "Not implemented"
-- `src/adapters/base-adapter.ts` — Base class with shared utilities
-- `src/adapters/index.ts` — Adapter registry with `detectAgents()`, `autoDetectSource()`, `getAdapter()`
-- `src/core/conversation-analyzer.ts` — Your Round 2 analyzer, use it in both new adapters
-- `src/core/project-context.ts` — Your Round 2 context extractor, use it in both new adapters
-- `src/core/registry.ts` — Has storage paths for all 3 agents per OS
-
-The Claude Code adapter is the reference implementation. Follow its patterns for the new adapters.
+- `src/core/watcher.ts` — Stub class with `start()`, `stop()`, `getState()` methods (all throw "Not implemented")
+- `src/types/index.ts` — Has `WatcherState` interface: `{ timestamp, agents, activeSessions }`
+- `chokidar` is already in `package.json` dependencies
+- `src/cli/index.ts` — Has stub `watch` command that prints "not implemented yet" (Prateek will wire it up after you build the core)
+- All 3 adapters have `detect()` and `listSessions()` methods you can use to discover what to watch
 
 ---
 
 ## Tasks (in order)
 
-### Task 1: Implement the Codex adapter
+### Task 1: Design the watcher event system
 
-**File:** `src/adapters/codex/adapter.ts`
+**File:** `src/types/index.ts`
 
-Codex CLI stores sessions at `~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session-id>.jsonl`
+Add these interfaces (coordinate with Prateek — this is a shared file):
 
-Key differences from Claude Code:
-- Sessions are nested by date (YYYY/MM/DD/ subdirectories)
-- Filename format: `rollout-2025-01-22T10-30-00-abc123.jsonl`
-- JSONL entries can have `role: "developer"` → map to `"system"`
-- Content can be a string OR an array of content blocks (OpenAI format)
-- Tool calls use `type: "tool_call"` with `name: "write_file"`, `"edit_file"`, `"shell"`, `"read_file"`
-- Some entries have a `cwd` field → use as project path
-- Memory file: `AGENTS.md` (project root or `~/.codex/AGENTS.md`)
+```typescript
+export interface WatcherEvent {
+  type: "session-update" | "new-session" | "rate-limit" | "idle";
+  agentId: AgentId;
+  sessionId?: string;
+  timestamp: string;
+  details?: string;
+}
 
-Implementation:
-1. `detect()` — Check if `~/.codex/sessions/` exists and has `.jsonl` files
-2. `listSessions()` — Glob for `~/.codex/sessions/**/*.jsonl`, parse filenames for session IDs, read first/last lines for timestamps, sort by mtime descending
-3. `capture(sessionId)` — Stream JSONL, extract messages/tool calls/file changes, call `analyzeConversation()` and `extractProjectContext()`
-4. `captureLatest()` — Find most recent file and capture it
+export interface WatcherOptions {
+  agents?: AgentId[];
+  interval?: number;       // polling interval in ms (default: 30000)
+  projectPath?: string;    // only watch sessions for this project
+  onEvent?: (event: WatcherEvent) => void;
+}
+```
 
-See PRD Section 9.4 for full spec.
+Update `WatcherState` to track more detail:
 
-### Task 2: Implement the Cursor adapter
+```typescript
+export interface WatcherState {
+  timestamp: string;
+  agents: AgentId[];
+  activeSessions: Record<string, {
+    messageCount: number;
+    lastCheckedAt: string;
+    lastChangedAt?: string;
+  }>;
+  running: boolean;
+}
+```
 
-**File:** `src/adapters/cursor/adapter.ts`
+### Task 2: Implement the watcher core
 
-Cursor stores sessions in SQLite: `<app-data>/Cursor/User/workspaceStorage/<hash>/state.vscdb`
+**File:** `src/core/watcher.ts`
 
-Platform paths (from registry.ts):
-- macOS: `~/Library/Application Support/Cursor/User/workspaceStorage/`
-- Linux: `~/.config/Cursor/User/workspaceStorage/`
-- Windows: `%APPDATA%/Cursor/User/workspaceStorage/`
+The watcher does NOT use chokidar's file-change events directly (agent session files update unpredictably). Instead, use a **polling approach**:
 
-Key details:
-- Open SQLite in **READ-ONLY mode**: `new Database(path, { readonly: true, fileMustExist: true })`
-- Table: `ItemTable (key TEXT, value TEXT)`
-- Try keys in order:
-  1. `composer.composerData` → JSON with `allComposers` array (modern format)
-  2. `workbench.panel.aichat.view.aichat.chatdata` → legacy format
-- Individual messages: `bubbleId:<composerId>:<bubbleId>` keys
-- Each workspace folder has a `workspace.json` with `{ "folder": "file:///path/to/project" }`
-- Session ID format: `<workspace-hash>:<composerId>`
-- Memory file: `.cursorrules` or `.cursor/rules/*.mdc`
-- `better-sqlite3` is already in package.json dependencies
+1. `start(options)` —
+   - Determine which agents to watch (default: all detected agents)
+   - Set up a `setInterval` that runs every `options.interval` ms (default 30s)
+   - Each tick: call `adapter.listSessions(projectPath)` for each agent
+   - Compare with previous snapshot: detect new sessions, message count changes
+   - Emit events via `options.onEvent` callback
+   - Rate limit detection: if a session's message count stops growing AND the last message was from the assistant (mid-response), emit a `"rate-limit"` event. Use a simple heuristic: if 2+ consecutive checks show the same message count, consider it potentially rate-limited.
 
-Implementation:
-1. `detect()` — Check if workspaceStorage path exists for current platform
-2. `listSessions()` — Scan workspace folders, open each state.vscdb, read composer list, resolve project paths from workspace.json
-3. `capture(sessionId)` — Parse workspace-hash:composerId, open correct state.vscdb, read messages, call `analyzeConversation()` and `extractProjectContext()`
-4. `captureLatest()` — Find most recently updated composer and capture it
+2. `stop()` —
+   - Clear the interval
+   - Set `running = false`
+   - Update state timestamp
 
-See PRD Sections 9.2-9.3 for full spec.
+3. `getState()` — Return current `WatcherState`
 
-### Task 3: Add test fixtures
+4. `takeSnapshot()` — Public method. Capture current session counts for all watched agents and return a `WatcherState`. The polling loop calls this internally, but the CLI can also call it for a one-shot check.
 
-**Files to create:**
-- `tests/fixtures/codex-session.jsonl` — 15+ line JSONL fixture with Codex format entries (role: user/assistant/developer, tool_calls, content as string and array, cwd field)
-- `tests/fixtures/cursor-state.json` — Mock data representing what you'd read from SQLite keys (since we can't ship a .vscdb in fixtures, mock the DB reads)
+Key implementation notes:
+- Use `getAdapter()` and `adapter.listSessions()` from `src/adapters/index.ts`
+- Store previous snapshot to diff against
+- Handle errors gracefully — if an adapter throws, log it and continue watching other agents
+- The watcher should be a singleton-style class (only one instance running at a time)
 
-### Task 4: Write Codex adapter tests
+### Task 3: Add rate limit detection heuristics
 
-**File:** `tests/adapters/codex.test.ts`
+**File:** `src/core/watcher.ts`
 
-Replace the skipped stubs with real tests. Follow the Claude Code test patterns:
-- Mock `os.homedir()` and create temp directory structure
-- Test `detect()` with and without session files
-- Test `listSessions()` ordering (most recent first)
-- Test `capture()` message parsing, file change extraction, conversation analysis
-- Test `captureLatest()` picks most recent
-- Test `role: "developer"` → `"system"` mapping
-- Test content as string vs array format
+Simple heuristics for detecting when an agent has hit a rate limit:
 
-### Task 5: Write Cursor adapter tests
+1. **Stale session:** Message count unchanged across 2+ polling intervals
+2. **Session growth then stop:** Session was actively growing (message count increasing), then stopped
+3. **Agent-specific signals (stretch goal):**
+   - Claude Code: Check if last JSONL entry contains rate limit keywords ("exceeded", "rate limit", "429")
+   - Cursor: Check if SQLite has a rate limit indicator
+   - Codex: Check JSONL for rate limit entries
 
-**File:** `tests/adapters/cursor.test.ts`
+For now, implement heuristics 1 and 2. Emit `WatcherEvent` with `type: "rate-limit"`.
 
-Replace the skipped stubs with real tests:
-- Mock the workspace storage directory
-- For SQLite testing, either:
-  - Create a real temp SQLite DB with better-sqlite3 in the test setup, or
-  - Abstract the DB reads behind a method you can mock
-- Test `detect()` for different platforms
-- Test `listSessions()` with multiple workspaces
-- Test `capture()` with modern composer format
-- Test session ID parsing (`workspace-hash:composerId`)
-- Test `captureLatest()`
+### Task 4: Write watcher tests
+
+**File:** `tests/watcher/watcher.test.ts`
+
+Tests to write:
+- `should start watching and detect session updates` — mock adapter.listSessions to return changing message counts
+- `should detect new sessions` — second poll returns more sessions than first
+- `should emit rate-limit event when session goes stale` — message count unchanged after 2 intervals
+- `should handle adapter errors gracefully` — one adapter throws, others still work
+- `should stop watching and clear interval` — verify cleanup
+- `should only watch specified agents` — pass `agents: ["claude-code"]`, verify others not polled
+- `should filter by project path` — pass `projectPath`, verify it's forwarded to adapters
+
+Testing approach:
+- Mock adapters using `vi.spyOn` on `getAdapter()` from `src/adapters/index.ts`
+- Use `vi.useFakeTimers()` to control polling intervals
+- Collect events via the `onEvent` callback
+- No real file system needed — mock at the adapter layer
+
+### Task 5: Export watcher from barrel files
+
+**Files:**
+- `src/core/watcher.ts` — make sure the class and types are properly exported
+- Verify `src/types/index.ts` exports the new interfaces
 
 ---
 
@@ -128,33 +142,40 @@ Replace the skipped stubs with real tests:
 
 | File | Action |
 |------|--------|
-| `src/adapters/codex/adapter.ts` | **Rewrite** (replace stub) |
-| `src/adapters/cursor/adapter.ts` | **Rewrite** (replace stub) |
-| `tests/adapters/codex.test.ts` | **Rewrite** (replace skipped stubs) |
-| `tests/adapters/cursor.test.ts` | **Rewrite** (replace skipped stubs) |
-| `tests/fixtures/codex-session.jsonl` | **Create new** |
-| `tests/fixtures/cursor-state.json` | **Create new** |
-| `src/adapters/index.ts` | May need minor edits for adapter registration |
+| `src/types/index.ts` | **Edit** — add WatcherEvent, WatcherOptions, update WatcherState |
+| `src/core/watcher.ts` | **Rewrite** (replace stub with full implementation) |
+| `tests/watcher/watcher.test.ts` | **Create new** |
 
 ## Files NOT to touch
 
-- `src/cli/index.ts` — Prateek owns this
+- `src/cli/index.ts` — Prateek will wire the CLI after your core is done
 - `src/core/compression.ts` — Prateek owns this
 - `src/core/prompt-builder.ts` — Prateek owns this
-- `src/core/token-estimator.ts` — Prateek owns this
 - `tests/core/*` — Prateek owns these
 - `tests/e2e/*` — Prateek owns these
 
 ---
 
-## Reference: How Claude Code adapter does it
+## Reference: How adapters expose session data
 
-Look at `src/adapters/claude-code/adapter.ts` for patterns to follow:
-- Streaming JSONL parsing with `readline.createInterface()`
-- File change extraction from tool_use blocks (Write/Edit)
-- Integration with `analyzeConversation()` and `extractProjectContext()`
-- Building the full `CapturedSession` object
-- Error handling (malformed lines, missing files)
+```typescript
+// Get an adapter instance
+import { getAdapter } from "../adapters/index.js";
+const adapter = getAdapter("claude-code");
+
+// List sessions (returns SessionInfo[])
+const sessions = await adapter.listSessions(projectPath);
+// Each session has: id, startedAt, lastActiveAt, messageCount, projectPath, preview
+
+// Detect if agent is installed
+const detected = await adapter.detect();
+```
+
+The watcher should call `listSessions()` periodically and diff against the previous result.
+
+## Cross-platform note
+
+Your Cursor adapter tests had a bug where `APPDATA` was used to redirect paths — that only works on Windows. On Linux, the adapter uses `os.homedir() + .config/...`. I fixed this in PR #6 by mocking `os.homedir()` instead. **Follow the same pattern in watcher tests** — mock at the adapter layer, not the filesystem.
 
 ## When You're Done
 
@@ -163,15 +184,11 @@ Look at `src/adapters/claude-code/adapter.ts` for patterns to follow:
 npx tsc --noEmit
 npx vitest run
 
-# Smoke test (if you have Cursor/Codex installed)
-npx tsx src/cli/index.ts detect
-npx tsx src/cli/index.ts list
-
 # Push
 git add -A
-git commit -m "feat: Cursor and Codex adapters with full test coverage"
-git push -u origin feat/cursor-codex-adapters
-gh pr create --base main --title "feat: Cursor and Codex adapters (v0.2)"
+git commit -m "feat: watcher core with polling and rate-limit detection"
+git push -u origin feat/watcher
+gh pr create --base main --title "feat: watcher with rate-limit detection"
 ```
 
-Tell Prateek so he can review and merge.
+Tell Prateek so he can review, merge, and wire up the CLI.

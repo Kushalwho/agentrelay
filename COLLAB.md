@@ -2,7 +2,7 @@
 
 ## Current Status (Updated Feb 19, 2026)
 
-**MVP v0.1 is complete.** All 4 PRs merged. Moving to **v0.2 (Multi-Agent)**.
+**v0.2 Multi-Agent is complete.** All adapters working. Moving to **Round 4 (Watch + Polish)**.
 
 | Milestone | Status |
 |-----------|--------|
@@ -10,45 +10,50 @@
 | PR #2 — Data layer (Kushal) | Merged |
 | PR #3 — Enrich pipeline (Prateek) | Merged |
 | PR #4 — Smart extraction (Kushal) | Merged |
-| End-to-end `handoff` command | Working |
+| PR #5 — E2E tests, ora spinners, agent hints (Prateek) | Merged |
+| PR #6 — Cursor & Codex adapters (Kushal) | Merged |
+| End-to-end `handoff` command | Working (all 3 agents) |
 | CI (GitHub Actions) | Running on Node 18/20/22 |
-| Tests | 40 passing |
+| Tests | **63 passing** |
 
-### What's working (MVP complete)
+### What's working (v0.2 complete)
 
-- Claude Code adapter — full JSONL parsing with streaming
+- **All 3 adapters:** Claude Code, Cursor (SQLite), Codex (JSONL)
 - Conversation analyzer — task description, decisions, blockers, completed steps
 - Project context enrichment — git branch/status/log, directory tree, memory files
 - Compression engine — 7 priority layers, budget-aware packing
-- Prompt builder — self-summarizing RESUME.md template
-- CLI — all commands: `detect`, `list`, `capture`, `handoff`, `resume`, `info`
+- Prompt builder — self-summarizing RESUME.md with agent-specific target hints
+- CLI — all commands with ora spinners: `detect`, `list`, `capture`, `handoff`, `resume`, `info`
 - File + clipboard delivery
+- Agent-specific resume footer (cursor/codex/claude-code)
+- E2E integration tests (4 tests)
 - npm link works as global `agentrelay` command
 
-### What's next (v0.2 — Multi-Agent)
+### What's next (Round 4)
 
-Per PRD milestones:
-- Cursor adapter (SQLite reader)
-- Codex adapter (JSONL reader)
-- E2E tests
-- ora spinners for CLI UX
-- Agent-specific resume formatting
+| Task | Owner | Branch |
+|------|-------|--------|
+| Watcher implementation (chokidar-based) | **Kushal** | `feat/watcher` |
+| Watcher tests | **Kushal** | `feat/watcher` |
+| Watcher CLI integration + spinner | **Prateek** | `feat/watch-cli` |
+| `--dry-run` flag for handoff | **Prateek** | `feat/watch-cli` |
+| Bump version to v0.2.0 + npm publish prep | **Prateek** | `feat/watch-cli` |
 
 ---
 
 ## Team
 
-| Who | Role | Round 3 Branch |
-|-----|------|----------------|
-| **Prateek** | Core engine + CLI + E2E tests | `feat/e2e-and-polish` |
-| **Kushal** | Data layer + adapters | `feat/cursor-codex-adapters` |
+| Who | Role | Current Focus |
+|-----|------|---------------|
+| **Prateek** | Core engine + CLI + E2E tests | Watch CLI, dry-run, version bump |
+| **Kushal** | Data layer + adapters + watcher | Watcher core implementation |
 
 ## The Contract: `CapturedSession`
 
 Both sides meet at the `CapturedSession` interface in `src/types/index.ts`.
 
-- **Kushal** builds adapters that **produce** `CapturedSession` objects from raw agent data
-- **Prateek** builds the engine that **consumes** `CapturedSession` objects and outputs RESUME.md
+- **Kushal** builds adapters/watcher that **produce** `CapturedSession` objects and monitor agent data
+- **Prateek** builds the engine/CLI that **consumes** `CapturedSession` objects and outputs RESUME.md
 
 ## Branch Workflow
 
@@ -58,15 +63,15 @@ git checkout main
 git pull origin main
 
 # Create your feature branch
-git checkout -b feat/cursor-codex-adapters   # (Kushal)
-git checkout -b feat/e2e-and-polish          # (Prateek)
+git checkout -b feat/watcher          # (Kushal)
+git checkout -b feat/watch-cli        # (Prateek)
 
 # Work, commit frequently
 git add <files> && git commit -m "description"
 
 # Push your branch
-git push -u origin feat/cursor-codex-adapters
-git push -u origin feat/e2e-and-polish
+git push -u origin feat/watcher
+git push -u origin feat/watch-cli
 
 # Create PR to main
 gh pr create --base main --title "feat: description"
@@ -75,7 +80,7 @@ gh pr create --base main --title "feat: description"
 git pull origin main --rebase
 ```
 
-## File Ownership (Round 3)
+## File Ownership (Round 4)
 
 These files are **shared** — coordinate before editing:
 - `src/types/index.ts` — if you need to change an interface, tell the other person
@@ -89,8 +94,10 @@ These files are **shared** — coordinate before editing:
 | `src/core/conversation-analyzer.ts` | `src/adapters/base-adapter.ts` |
 | `src/cli/index.ts` | `src/adapters/index.ts` |
 | `tests/core/*` | `src/core/project-context.ts` |
-| `tests/e2e/*` | `tests/adapters/*` |
+| `tests/e2e/*` | `src/core/watcher.ts` |
+| | `tests/adapters/*` |
 | | `tests/fixtures/*` |
+| | `tests/watcher/*` |
 
 ## How to Test
 
@@ -107,7 +114,7 @@ npx tsx src/cli/index.ts detect
 npx tsx src/cli/index.ts info
 npx tsx src/cli/index.ts list
 npx tsx src/cli/index.ts handoff --source claude-code
-npx tsx src/cli/index.ts handoff --source claude-code --tokens 5000
+npx tsx src/cli/index.ts handoff --source claude-code --target cursor --tokens 5000
 
 # Check output quality
 cat .handoff/RESUME.md
