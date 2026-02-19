@@ -1,4 +1,9 @@
-import type { AgentAdapter, AgentId, DetectResult } from "../types/index.js";
+import type {
+  AgentAdapter,
+  AgentId,
+  DetectResult,
+  SessionInfo,
+} from "../types/index.js";
 import { ClaudeCodeAdapter } from "./claude-code/adapter.js";
 import { CursorAdapter } from "./cursor/adapter.js";
 import { CodexAdapter } from "./codex/adapter.js";
@@ -54,16 +59,64 @@ export async function detectAgents(): Promise<DetectResult[]> {
 
 /**
  * Auto-detect the most recently active agent for the given project path.
- * Returns the first adapter that is detected, or null if none found.
+ * Falls back to the first detected adapter when no session metadata is available.
  */
 export async function autoDetectSource(projectPath?: string): Promise<AgentAdapter | null> {
+  let firstDetected: AgentAdapter | null = null;
+  let mostRecentAdapter: AgentAdapter | null = null;
+  let mostRecentTs = Number.NEGATIVE_INFINITY;
+
   for (const adapter of Object.values(adapters)) {
     try {
       const detected = await adapter.detect();
-      if (detected) return adapter;
+      if (!detected) {
+        continue;
+      }
+
+      if (!firstDetected) {
+        firstDetected = adapter;
+      }
+
+      const sessions = await adapter.listSessions(projectPath);
+      if (sessions.length === 0) {
+        continue;
+      }
+
+      const latestTs = getSessionRecency(sessions[0]);
+      if (!mostRecentAdapter || latestTs > mostRecentTs) {
+        mostRecentAdapter = adapter;
+        mostRecentTs = latestTs;
+      }
     } catch {
       // skip this adapter
     }
   }
-  return null;
+
+  return mostRecentAdapter ?? firstDetected;
+}
+
+function getSessionRecency(session: SessionInfo | undefined): number {
+  if (!session) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const lastActiveAt = toTimestamp(session.lastActiveAt);
+  if (Number.isFinite(lastActiveAt)) {
+    return lastActiveAt;
+  }
+
+  const startedAt = toTimestamp(session.startedAt);
+  if (Number.isFinite(startedAt)) {
+    return startedAt;
+  }
+
+  return Number.NEGATIVE_INFINITY;
+}
+
+function toTimestamp(value: string | undefined): number {
+  if (!value) {
+    return Number.NaN;
+  }
+  const ts = Date.parse(value);
+  return Number.isNaN(ts) ? Number.NaN : ts;
 }
