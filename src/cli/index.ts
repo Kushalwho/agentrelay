@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 import { Command } from "commander";
+import chalk from "chalk";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { detectAgents, autoDetectSource, getAdapter } from "../adapters/index.js";
 import { compress } from "../core/compression.js";
+import { extractProjectContext } from "../core/project-context.js";
 import { buildResumePrompt } from "../core/prompt-builder.js";
 import { AGENT_REGISTRY, getUsableTokenBudget } from "../core/registry.js";
 import type { AgentId } from "../types/index.js";
@@ -25,19 +27,21 @@ program
   .action(async () => {
     try {
       const results = await detectAgents();
+      console.log();
       for (const r of results) {
-        const icon = r.detected ? "+" : "-";
-        const status = r.detected ? "detected" : "not found";
-        console.log(`  [${icon}] ${r.agentId}: ${status} (${r.path})`);
+        if (r.detected) {
+          console.log(`  ${chalk.green("+")} ${chalk.bold(r.agentId)} ${chalk.dim(r.path)}`);
+        } else {
+          console.log(`  ${chalk.red("-")} ${chalk.dim(r.agentId)} ${chalk.dim(r.path)}`);
+        }
       }
+      console.log();
       if (!results.some((r) => r.detected)) {
-        console.log(
-          "\nNo agents detected. Install Claude Code, Cursor, or Codex CLI."
-        );
+        console.log(chalk.yellow("No agents detected. Install Claude Code, Cursor, or Codex CLI."));
         process.exit(1);
       }
     } catch (err) {
-      console.error("Failed to detect agents:", (err as Error).message);
+      console.error(chalk.red("Failed to detect agents:"), (err as Error).message);
       process.exit(1);
     }
   });
@@ -69,24 +73,27 @@ program
 
         if (sessions.length === 0) continue;
 
-        console.log(`\n${AGENT_REGISTRY[agentId].name}:`);
+        console.log(`\n  ${chalk.bold(AGENT_REGISTRY[agentId].name)}:`);
         const toShow = sessions.slice(0, limit - totalShown);
         for (const s of toShow) {
-          const idShort = s.id.slice(0, 12);
-          const date = s.lastActiveAt || s.startedAt || "unknown";
-          const msgs = s.messageCount != null ? `${s.messageCount} msgs` : "";
-          const preview = s.preview ? ` - ${s.preview}` : "";
-          console.log(`  ${idShort}  ${date}  ${msgs}${preview}`);
+          const idShort = chalk.cyan(s.id.slice(0, 12));
+          const date = chalk.dim(s.lastActiveAt || s.startedAt || "unknown");
+          const msgs = s.messageCount != null ? chalk.yellow(`(${s.messageCount} msgs)`) : "";
+          console.log(`    ${idShort}  ${date}  ${msgs}`);
+          if (s.preview) {
+            console.log(`    ${chalk.dim("└─")} ${s.preview.substring(0, 80)}`);
+          }
           totalShown++;
         }
         if (totalShown >= limit) break;
       }
+      console.log();
 
       if (totalShown === 0) {
-        console.log("No sessions found.");
+        console.log(chalk.yellow("No sessions found."));
       }
     } catch (err) {
-      console.error("Failed to list sessions:", (err as Error).message);
+      console.error(chalk.red("Failed to list sessions:"), (err as Error).message);
       process.exit(2);
     }
   });
@@ -106,23 +113,27 @@ program
         : await autoDetectSource(projectPath);
 
       if (!adapter) {
-        console.error("No agent detected. Use --source to specify one.");
+        console.error(chalk.red("No agent detected."), "Use --source to specify one.");
         process.exit(1);
       }
-      console.log(`Capturing from ${adapter.agentId}...`);
+      console.log(`Capturing from ${chalk.bold(adapter.agentId)}...`);
 
       const session = options.session
         ? await adapter.capture(options.session)
         : await adapter.captureLatest(projectPath);
 
+      // Enrich with project context
+      const context = await extractProjectContext(projectPath);
+      session.project = { ...session.project, ...context };
+
       const handoffDir = join(projectPath, ".handoff");
       mkdirSync(handoffDir, { recursive: true });
       writeFileSync(join(handoffDir, "session.json"), JSON.stringify(session, null, 2));
 
-      console.log(`Captured: ${session.conversation.messageCount} messages, ~${session.conversation.estimatedTokens} tokens`);
-      console.log(`Written to ${join(handoffDir, "session.json")}`);
+      console.log(chalk.green("Captured:"), `${session.conversation.messageCount} messages, ~${session.conversation.estimatedTokens} tokens`);
+      console.log(chalk.dim(`Written to ${join(handoffDir, "session.json")}`));
     } catch (err) {
-      console.error("Capture error:", (err as Error).message);
+      console.error(chalk.red("Capture error:"), (err as Error).message);
       process.exit(3);
     }
   });
@@ -145,24 +156,22 @@ program
       if (options.source) {
         adapter = getAdapter(options.source as AgentId);
         if (!adapter) {
-          console.error(`Unknown source agent: ${options.source}`);
+          console.error(chalk.red(`Unknown source agent: ${options.source}`));
           process.exit(1);
         }
       } else {
-        console.log("Auto-detecting source agent...");
+        console.log(chalk.dim("Auto-detecting source agent..."));
         adapter = await autoDetectSource(projectPath);
         if (!adapter) {
-          console.error(
-            "No source agent detected. Use --source to specify one."
-          );
+          console.error(chalk.red("No source agent detected."), "Use --source to specify one.");
           process.exit(1);
         }
-        console.log(`Detected: ${adapter.agentId}`);
+        console.log(`  Source: ${chalk.bold(adapter.agentId)}`);
       }
 
       // 2. Capture session
       let session;
-      console.log("Capturing session...");
+      console.log(chalk.dim("Capturing session..."));
       try {
         if (options.session) {
           session = await adapter.capture(options.session);
@@ -170,54 +179,65 @@ program
           session = await adapter.captureLatest(projectPath);
         }
       } catch (err) {
-        console.error("Failed to capture session:", (err as Error).message);
+        console.error(chalk.red("Failed to capture session:"), (err as Error).message);
         process.exit(3);
       }
 
-      // 3. Compress
+      // 3. Enrich with project context (git, tree, memory files)
+      console.log(chalk.dim("Enriching with project context..."));
+      const context = await extractProjectContext(projectPath);
+      session.project = { ...session.project, ...context };
+
+      // 4. Compress
       const targetTokens = options.tokens
         ? parseInt(options.tokens, 10)
         : undefined;
-      console.log("Compressing session...");
-      const compressed = compress(session, {
-        targetTokens,
-        targetAgent: (options.target as AgentId | "clipboard" | "file") || "file",
-      });
+      const target = (options.target as AgentId | "clipboard" | "file") || "file";
+      console.log(chalk.dim("Compressing..."));
+      const compressed = compress(session, { targetTokens, targetAgent: target });
 
-      // 4. Build resume prompt
-      console.log("Building resume prompt...");
+      // 5. Build resume prompt
       const resume = buildResumePrompt(session, compressed);
 
-      // 5. Write to .handoff/RESUME.md
+      // 6. Write to .handoff/
       const handoffDir = join(projectPath, ".handoff");
       mkdirSync(handoffDir, { recursive: true });
       const outputPath = join(handoffDir, "RESUME.md");
       writeFileSync(outputPath, resume);
-
-      // 6. Print stats
-      const budget = targetTokens || getUsableTokenBudget(
-        (options.target as AgentId | "clipboard" | "file") || "file"
-      );
-      console.log("\nHandoff complete!");
-      console.log(`  Source:     ${adapter.agentId}`);
-      console.log(`  Session:    ${session.sessionId}`);
-      console.log(`  Tokens:     ${compressed.totalTokens} / ${budget}`);
-      console.log(`  Layers:     ${compressed.includedLayers.join(", ")}`);
-      if (compressed.droppedLayers.length > 0) {
-        console.log(`  Dropped:    ${compressed.droppedLayers.join(", ")}`);
-      }
-      console.log(`  Output:     ${outputPath}`);
+      writeFileSync(join(handoffDir, "session.json"), JSON.stringify(session, null, 2));
 
       // 7. Try clipboard copy
+      let clipboardOk = false;
       try {
         const { default: clipboard } = await import("clipboardy");
         await clipboard.write(resume);
-        console.log("  Clipboard:  copied!");
+        clipboardOk = true;
       } catch {
-        // Clipboard not available, that's fine
+        // Clipboard not available
       }
+
+      // 8. Print results
+      const budget = targetTokens || getUsableTokenBudget(target);
+      const pct = Math.round((compressed.totalTokens / budget) * 100);
+      console.log();
+      console.log(chalk.green.bold("  Handoff complete!"));
+      console.log();
+      console.log(`  ${chalk.dim("Source:")}     ${adapter.agentId}`);
+      console.log(`  ${chalk.dim("Session:")}    ${session.sessionId.slice(0, 12)}`);
+      console.log(`  ${chalk.dim("Branch:")}     ${session.project.gitBranch || "unknown"}`);
+      console.log(`  ${chalk.dim("Messages:")}   ${session.conversation.messageCount}`);
+      console.log(`  ${chalk.dim("Tokens:")}     ${compressed.totalTokens} / ${budget} ${chalk.dim(`(${pct}%)`)}`);
+      console.log(`  ${chalk.dim("Included:")}   ${compressed.includedLayers.join(", ")}`);
+      if (compressed.droppedLayers.length > 0) {
+        console.log(`  ${chalk.dim("Dropped:")}    ${chalk.yellow(compressed.droppedLayers.join(", "))}`);
+      }
+      console.log(`  ${chalk.dim("Output:")}     ${outputPath}`);
+      if (clipboardOk) {
+        console.log(`  ${chalk.dim("Clipboard:")}  ${chalk.green("copied!")}`);
+      }
+      console.log();
     } catch (err) {
-      console.error("Handoff failed:", (err as Error).message);
+      console.error(chalk.red("Handoff failed:"), (err as Error).message);
       process.exit(3);
     }
   });
@@ -243,6 +263,7 @@ program
   .action(async (options) => {
     try {
       const filePath = options.file || join(process.cwd(), ".handoff", "session.json");
+      console.log(chalk.dim(`Reading ${filePath}...`));
       const raw = readFileSync(filePath, "utf-8");
       const session = JSON.parse(raw);
 
@@ -254,12 +275,13 @@ program
 
       const handoffDir = join(process.cwd(), ".handoff");
       mkdirSync(handoffDir, { recursive: true });
-      writeFileSync(join(handoffDir, "RESUME.md"), resume);
+      const outputPath = join(handoffDir, "RESUME.md");
+      writeFileSync(outputPath, resume);
 
-      console.log(`Resume regenerated: ${compressed.totalTokens} tokens`);
-      console.log(`Written to ${join(handoffDir, "RESUME.md")}`);
+      console.log(chalk.green("Resume regenerated:"), `${compressed.totalTokens} tokens`);
+      console.log(chalk.dim(`Written to ${outputPath}`));
     } catch (err) {
-      console.error("Resume error:", (err as Error).message);
+      console.error(chalk.red("Resume error:"), (err as Error).message);
       process.exit(3);
     }
   });
@@ -270,14 +292,14 @@ program
   .description("Show agent storage paths, context window sizes, and config")
   .action(async () => {
     const platform = process.platform as string;
-    console.log("AgentRelay - Agent Registry\n");
+    console.log(`\n  ${chalk.bold("AgentRelay")} ${chalk.dim("v0.1.0")} ${chalk.dim(`(${platform})`)}\n`);
     for (const meta of Object.values(AGENT_REGISTRY)) {
-      const storagePath = meta.storagePaths[platform] || "N/A for this platform";
-      console.log(`${meta.name} (${meta.id}):`);
-      console.log(`  Storage:        ${storagePath}`);
-      console.log(`  Context Window: ${meta.contextWindow.toLocaleString()} tokens`);
-      console.log(`  Usable Tokens:  ${meta.usableTokens.toLocaleString()} tokens`);
-      console.log(`  Memory Files:   ${meta.memoryFiles.join(", ")}`);
+      const storagePath = meta.storagePaths[platform] || "N/A";
+      console.log(`  ${chalk.bold(meta.name)} ${chalk.dim(`(${meta.id})`)}`);
+      console.log(`    ${chalk.dim("Storage:")}        ${storagePath}`);
+      console.log(`    ${chalk.dim("Context window:")} ${meta.contextWindow.toLocaleString()} tokens`);
+      console.log(`    ${chalk.dim("Usable budget:")}  ${meta.usableTokens.toLocaleString()} tokens`);
+      console.log(`    ${chalk.dim("Memory files:")}   ${meta.memoryFiles.join(", ")}`);
       console.log();
     }
   });

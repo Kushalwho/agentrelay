@@ -27,8 +27,17 @@
     "session",
     "relay"
   ],
-  "author": "",
+  "author": "Prateek Choudhary <prtkworks@gmail.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kushalwho/agentrelay.git"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=18"
   },
