@@ -1,0 +1,100 @@
+{
+  "modern": {
+    "workspace": {
+      "folder": "file:///tmp/cursor-app"
+    },
+    "composerData": {
+      "allComposers": [
+        {
+          "composerId": "composer-123",
+          "createdAt": "2026-02-20T10:00:00Z",
+          "lastUpdatedAt": "2026-02-20T10:10:00Z",
+          "messageCount": 7,
+          "title": "Build Cursor adapter"
+        },
+        {
+          "composerId": "composer-older",
+          "createdAt": "2026-02-19T08:00:00Z",
+          "lastUpdatedAt": "2026-02-19T08:05:00Z",
+          "messageCount": 2,
+          "title": "Old composer"
+        }
+      ]
+    },
+    "bubbles": {
+      "bubbleId:composer-123:1": {
+        "role": "user",
+        "content": "Build a task API with auth and validation.",
+        "timestamp": "2026-02-20T10:00:00Z"
+      },
+      "bubbleId:composer-123:2": {
+        "role": "assistant",
+        "content": "I'll use Fastify instead of Express for faster startup.",
+        "timestamp": "2026-02-20T10:01:00Z"
+      },
+      "bubbleId:composer-123:3": {
+        "role": "assistant",
+        "content": "Created the auth middleware and route registration.",
+        "timestamp": "2026-02-20T10:02:00Z",
+        "toolName": "write_file",
+        "path": "src/auth.ts",
+        "contentText": "export function requireAuth() {}"
+      },
+      "bubbleId:composer-123:4": {
+        "role": "assistant",
+        "content": "Error: ECONNREFUSED 127.0.0.1:5432",
+        "timestamp": "2026-02-20T10:03:00Z"
+      },
+      "bubbleId:composer-123:5": {
+        "role": "assistant",
+        "content": "Done. Fixed token refresh edge case.",
+        "timestamp": "2026-02-20T10:04:00Z",
+        "toolCalls": [
+          {
+            "name": "edit_file",
+            "input": {
+              "path": "src/token.ts",
+              "content": "export const refresh = true;"
+            }
+          }
+        ]
+      },
+      "bubbleId:composer-older:1": {
+        "role": "user",
+        "content": "Old request",
+        "timestamp": "2026-02-19T08:00:00Z"
+      },
+      "bubbleId:composer-older:2": {
+        "role": "assistant",
+        "content": "Old response",
+        "timestamp": "2026-02-19T08:01:00Z"
+      }
+    }
+  },
+  "legacy": {
+    "workspace": {
+      "folder": "file:///tmp/cursor-legacy"
+    },
+    "chatData": {
+      "sessions": [
+        {
+          "id": "legacy-777",
+          "createdAt": "2026-02-18T11:00:00Z",
+          "lastUpdatedAt": "2026-02-18T11:03:00Z",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Implement legacy fallback parser",
+              "timestamp": "2026-02-18T11:00:00Z"
+            },
+            {
+              "role": "assistant",
+              "content": "Implemented legacy parser and validation.",
+              "timestamp": "2026-02-18T11:01:00Z"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
