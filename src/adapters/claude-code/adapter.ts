@@ -7,6 +7,7 @@ import { glob } from "glob";
 import { BaseAdapter } from "../base-adapter.js";
 import { analyzeConversation } from "../../core/conversation-analyzer.js";
 import { extractProjectContext } from "../../core/project-context.js";
+import { validateSession } from "../../core/validation.js";
 import type {
   AgentId,
   CapturedSession,
@@ -105,6 +106,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
 
     const messages: ConversationMessage[] = [];
     const fileChanges = new Map<string, FileChange>();
+    const seenMessageIds = new Set<string>();
     let totalTokens = 0;
     let lastAssistantMessage = "";
     let sessionStartedAt: string | undefined;
@@ -120,6 +122,12 @@ export class ClaudeCodeAdapter extends BaseAdapter {
 
       if (!entry.message) {
         continue;
+      }
+      if (entry.message.id && seenMessageIds.has(entry.message.id)) {
+        continue;
+      }
+      if (entry.message.id) {
+        seenMessageIds.add(entry.message.id);
       }
 
       // Track session start time from the first entry's timestamp
@@ -253,7 +261,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       },
     };
 
-    return session;
+    return validateSession(session) as CapturedSession;
   }
 
   // ---------------------------------------------------------------------------
@@ -452,6 +460,7 @@ interface ContentBlock {
 interface JsonlEntry {
   type?: "human" | "assistant";
   message?: {
+    id?: string;
     role: "user" | "assistant";
     content: ContentBlock[] | string;
     usage?: {

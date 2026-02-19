@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import { BaseAdapter } from "../base-adapter.js";
 import { analyzeConversation } from "../../core/conversation-analyzer.js";
 import { extractProjectContext } from "../../core/project-context.js";
+import { validateSession } from "../../core/validation.js";
 import type {
   AgentId,
   CapturedSession,
@@ -78,6 +80,7 @@ export class CursorAdapter extends BaseAdapter {
       .readdirSync(this.workspaceStorageDir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory());
 
+    const candidates: WorkspaceCandidate[] = [];
     for (const workspaceEntry of workspaceEntries) {
       const workspaceHash = workspaceEntry.name;
       const workspaceDir = path.join(this.workspaceStorageDir, workspaceHash);
@@ -85,27 +88,58 @@ export class CursorAdapter extends BaseAdapter {
       if (!fs.existsSync(dbPath)) {
         continue;
       }
-
       const resolvedProjectPath = this.readWorkspaceProjectPath(workspaceDir);
-      if (projectPath && resolvedProjectPath) {
-        if (!this.pathsEqual(projectPath, resolvedProjectPath)) {
-          continue;
-        }
-      } else if (projectPath && !resolvedProjectPath) {
-        continue;
-      }
+      const stat = fs.statSync(dbPath);
+      candidates.push({
+        workspaceHash,
+        workspaceDir,
+        dbPath,
+        resolvedProjectPath,
+        mtimeMs: stat.mtimeMs,
+      });
+    }
 
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    let selectedCandidates = candidates;
+    if (projectPath) {
+      const exactMatches = candidates.filter(
+        (candidate) =>
+          candidate.resolvedProjectPath &&
+          this.pathsEqual(projectPath, candidate.resolvedProjectPath),
+      );
+      const hashMatches = candidates.filter((candidate) =>
+        this.matchesWorkspaceHash(projectPath, candidate.workspaceHash),
+      );
+
+      if (exactMatches.length > 0) {
+        selectedCandidates = exactMatches;
+      } else if (hashMatches.length > 0) {
+        selectedCandidates = hashMatches;
+      } else {
+        const fallback = [...candidates].sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
+        selectedCandidates = fallback ? [fallback] : [];
+      }
+    }
+
+    for (const candidate of selectedCandidates) {
       let db: Database.Database | null = null;
       try {
-        db = this.openDatabase(dbPath);
+        db = this.openDatabase(candidate.dbPath);
         const composers = this.readComposers(db);
         for (const composer of composers) {
           sessions.push({
-            id: `${workspaceHash}:${composer.id}`,
+            id: `${candidate.workspaceHash}:${composer.id}`,
             startedAt: composer.startedAt,
             lastActiveAt: composer.lastActiveAt,
             messageCount: composer.messageCount,
-            projectPath: resolvedProjectPath,
+            projectPath:
+              candidate.resolvedProjectPath ??
+              (projectPath && this.matchesWorkspaceHash(projectPath, candidate.workspaceHash)
+                ? projectPath
+                : undefined),
             preview: composer.preview,
           });
         }
@@ -237,7 +271,7 @@ export class CursorAdapter extends BaseAdapter {
     const projectContext = await extractProjectContext(projectPath);
     const analysis = analyzeConversation(messages);
 
-    return {
+    const session: CapturedSession = {
       version: "1.0",
       source: "cursor",
       capturedAt: new Date().toISOString(),
@@ -266,6 +300,7 @@ export class CursorAdapter extends BaseAdapter {
         blockers: analysis.blockers,
       },
     };
+    return validateSession(session) as CapturedSession;
   }
 
   async captureLatest(projectPath?: string): Promise<CapturedSession> {
@@ -758,6 +793,21 @@ export class CursorAdapter extends BaseAdapter {
       path.resolve(value).replace(/[\\/]+/g, "/").toLowerCase();
     return normalize(a) === normalize(b);
   }
+
+  private matchesWorkspaceHash(projectPath: string, workspaceHash: string): boolean {
+    const normalizedPath = path.resolve(projectPath).replace(/\\/g, "/");
+    const uriPath = normalizedPath.startsWith("/") ? normalizedPath : `/${normalizedPath}`;
+    const fileUri = `file://${uriPath}`;
+    const rawCandidates = [projectPath, normalizedPath, fileUri, encodeURI(fileUri)];
+
+    const hashCandidates = new Set<string>();
+    for (const value of rawCandidates) {
+      hashCandidates.add(createHash("md5").update(value).digest("hex"));
+      hashCandidates.add(createHash("sha1").update(value).digest("hex"));
+      hashCandidates.add(createHash("sha256").update(value).digest("hex"));
+    }
+    return hashCandidates.has(workspaceHash.toLowerCase());
+  }
 }
 
 interface CursorComposerSummary {
@@ -773,4 +823,12 @@ interface ParsedCursorPayload {
   toolMessages: ConversationMessage[];
   fileChanges: FileChange[];
   tokenCount: number;
+}
+
+interface WorkspaceCandidate {
+  workspaceHash: string;
+  workspaceDir: string;
+  dbPath: string;
+  resolvedProjectPath?: string;
+  mtimeMs: number;
 }
