@@ -10,7 +10,8 @@ import { compress } from "../core/compression.js";
 import { extractProjectContext } from "../core/project-context.js";
 import { buildResumePrompt } from "../core/prompt-builder.js";
 import { AGENT_REGISTRY, getUsableTokenBudget } from "../core/registry.js";
-import type { AgentId } from "../types/index.js";
+import { Watcher } from "../core/watcher.js";
+import type { AgentId, WatcherEvent } from "../types/index.js";
 
 const program = new Command();
 
@@ -289,12 +290,68 @@ program
 // --- watch ---
 program
   .command("watch")
-  .description("Start background watcher for rate limit detection")
+  .description("Watch agent sessions for changes and rate limits")
   .option("--agents <csv>", "Comma-separated list of agents to watch")
-  .option("--interval <seconds>", "Snapshot interval in seconds", "30")
-  .action(async () => {
-    console.log(chalk.yellow("Watch mode is coming in a future release."));
-    console.log(chalk.dim("Use 'agentrelay handoff' for manual handoffs in the meantime."));
+  .option("--interval <seconds>", "Polling interval in seconds", "30")
+  .option("-p, --project <path>", "Only watch sessions for this project")
+  .action(async (options) => {
+    const watcher = new Watcher();
+
+    const agents = options.agents
+      ? (options.agents.split(",").map((s: string) => s.trim()) as AgentId[])
+      : undefined;
+    const interval = parseInt(options.interval, 10) * 1000;
+
+    const formatEvent = (event: WatcherEvent) => {
+      const time = chalk.dim(new Date(event.timestamp).toLocaleTimeString());
+      const agent = chalk.cyan(event.agentId);
+      const sid = event.sessionId ? chalk.dim(` ${event.sessionId.slice(0, 12)}`) : "";
+      switch (event.type) {
+        case "new-session":
+          console.log(`  ${time} ${chalk.green("+")} ${agent}${sid} new session`);
+          break;
+        case "session-update":
+          console.log(`  ${time} ${chalk.blue("~")} ${agent}${sid} ${chalk.dim(event.details || "updated")}`);
+          break;
+        case "rate-limit":
+          console.log(`  ${time} ${chalk.red("!")} ${agent}${sid} ${chalk.red("possible rate limit")} — run ${chalk.bold("agentrelay handoff")} to switch`);
+          break;
+        case "idle":
+          break; // Don't spam idle events
+      }
+    };
+
+    let spinner = ora("Starting watcher...").start();
+    try {
+      await watcher.start({
+        agents,
+        interval,
+        projectPath: options.project,
+        onEvent: formatEvent,
+      });
+
+      const state = watcher.getState()!;
+      const sessionCount = Object.keys(state.activeSessions).length;
+      spinner.succeed(`Watching ${state.agents.join(", ")} (${sessionCount} sessions, ${options.interval}s interval)`);
+      console.log(chalk.dim("  Press Ctrl+C to stop.\n"));
+
+      const shutdown = async () => {
+        console.log();
+        spinner = ora("Stopping watcher...").start();
+        await watcher.stop();
+        spinner.succeed("Watcher stopped.");
+        process.exit(0);
+      };
+      process.on("SIGINT", () => void shutdown());
+      process.on("SIGTERM", () => void shutdown());
+
+      // Keep the process alive
+      await new Promise(() => {});
+    } catch (err) {
+      spinner.fail("Watcher failed");
+      console.error(chalk.red((err as Error).message));
+      process.exit(1);
+    }
   });
 
 // --- resume ---
