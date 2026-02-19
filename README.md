@@ -17,15 +17,15 @@ AI coding agents are context silos. When your session hits a rate limit or runs 
 ## Installation
 
 ```bash
-# From source (current)
+# From npm
+npm install -g agentrelay
+
+# From source
 git clone https://github.com/Kushalwho/agentrelay.git
 cd agentrelay
 npm install
 npm run build
 npm link
-
-# From npm (coming soon)
-npm install -g agentrelay
 ```
 
 ## Quick Start
@@ -71,6 +71,9 @@ agentrelay info                           Show agent paths and config
 -p, --project <path>    Project path. Default: current directory.
 --tokens <n>            Token budget override. Default: based on target agent.
 --dry-run               Preview what would be captured without writing files.
+--no-clipboard          Skip clipboard copy (useful in CI/headless environments).
+-o, --output <path>     Custom output path. Directory or file path.
+-v, --verbose           Show detailed debug output.
 ```
 
 ### Watch Options

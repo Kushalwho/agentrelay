@@ -3,8 +3,8 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { detectAgents, autoDetectSource, getAdapter } from "../adapters/index.js";
 import { compress } from "../core/compression.js";
 import { extractProjectContext } from "../core/project-context.js";
@@ -13,6 +13,35 @@ import { AGENT_REGISTRY, getUsableTokenBudget } from "../core/registry.js";
 import { Watcher } from "../core/watcher.js";
 import type { AgentId, WatcherEvent } from "../types/index.js";
 
+// --- verbose logger ---
+let verbose = false;
+function debug(...args: unknown[]) {
+  if (verbose) {
+    console.log(chalk.dim("[debug]"), ...args);
+  }
+}
+
+/**
+ * Resolve the output path for RESUME.md.
+ * - If path is a directory or ends with `/`, write RESUME.md inside it.
+ * - Otherwise treat as a file path.
+ */
+function resolveOutputPath(outputFlag: string | undefined, projectPath: string): { resumePath: string; sessionDir: string } {
+  if (!outputFlag) {
+    const handoffDir = join(projectPath, ".handoff");
+    return { resumePath: join(handoffDir, "RESUME.md"), sessionDir: handoffDir };
+  }
+
+  const isDir = outputFlag.endsWith("/") || outputFlag.endsWith("\\") ||
+    (existsSync(outputFlag) && lstatSync(outputFlag).isDirectory());
+
+  if (isDir) {
+    return { resumePath: join(outputFlag, "RESUME.md"), sessionDir: outputFlag };
+  }
+
+  return { resumePath: outputFlag, sessionDir: dirname(outputFlag) };
+}
+
 const program = new Command();
 
 program
@@ -20,7 +49,7 @@ program
   .description(
     "Capture your AI coding agent session and continue in a different agent."
   )
-  .version("0.2.0");
+  .version("0.3.0");
 
 // --- detect ---
 program
@@ -107,8 +136,10 @@ program
   .option("-s, --source <agent>", "Source agent")
   .option("--session <id>", "Specific session ID")
   .option("-p, --project <path>", "Project path")
+  .option("-v, --verbose", "Show detailed debug output")
   .action(async (options) => {
     try {
+      if (options.verbose) verbose = true;
       const projectPath = options.project || process.cwd();
 
       // 1. Detect source
@@ -164,14 +195,20 @@ program
   .option("-p, --project <path>", "Project path")
   .option("--tokens <n>", "Token budget override")
   .option("--dry-run", "Preview what would be captured without writing files")
+  .option("--no-clipboard", "Skip clipboard copy")
+  .option("-o, --output <path>", "Custom output path for RESUME.md")
+  .option("-v, --verbose", "Show detailed debug output")
   .action(async (options) => {
     try {
+      if (options.verbose) verbose = true;
       const projectPath = options.project || process.cwd();
+      debug("Project path:", projectPath);
 
       // 1. Determine source adapter
       let spinner = ora("Detecting source agent...").start();
       let adapter;
       if (options.source) {
+        debug("Using explicit source:", options.source);
         adapter = getAdapter(options.source as AgentId);
         if (!adapter) {
           spinner.fail(`Unknown source agent: ${options.source}`);
@@ -179,6 +216,7 @@ program
         }
         spinner.succeed(`Source: ${adapter.agentId}`);
       } else {
+        debug("Auto-detecting source agent...");
         adapter = await autoDetectSource(projectPath);
         if (!adapter) {
           spinner.fail("No source agent detected.");
@@ -198,6 +236,8 @@ program
           session = await adapter.captureLatest(projectPath);
         }
         spinner.succeed(`Captured ${session.conversation.messageCount} messages`);
+        debug("Session ID:", session.sessionId);
+        debug("Estimated tokens:", session.conversation.estimatedTokens);
       } catch (err) {
         spinner.fail("Failed to capture session");
         console.error((err as Error).message);
@@ -208,6 +248,8 @@ program
       spinner = ora("Enriching with project context...").start();
       const context = await extractProjectContext(projectPath);
       session.project = { ...session.project, ...context };
+      debug("Git branch:", context.gitBranch || "none");
+      debug("Memory files:", context.memoryFileContents ? "found" : "none");
       spinner.succeed("Project context enriched");
 
       // 4. Compress
@@ -215,9 +257,14 @@ program
         ? parseInt(options.tokens, 10)
         : undefined;
       const target = (options.target as AgentId | "clipboard" | "file") || "file";
+      debug("Target:", target, "| Token budget:", targetTokens || "auto");
       spinner = ora("Compressing...").start();
       const compressed = compress(session, { targetTokens, targetAgent: target });
       spinner.succeed(`Compressed to ${compressed.totalTokens} tokens`);
+      debug("Included layers:", compressed.includedLayers.join(", "));
+      if (compressed.droppedLayers.length > 0) {
+        debug("Dropped layers:", compressed.droppedLayers.join(", "));
+      }
 
       // 5. Build resume prompt
       const resume = buildResumePrompt(session, compressed, target);
@@ -245,22 +292,27 @@ program
         return;
       }
 
-      // 7. Write to .handoff/
+      // 7. Write to .handoff/ (or custom --output path)
       spinner = ora("Writing handoff files...").start();
-      const handoffDir = join(projectPath, ".handoff");
-      mkdirSync(handoffDir, { recursive: true });
-      const outputPath = join(handoffDir, "RESUME.md");
+      const { resumePath: outputPath, sessionDir } = resolveOutputPath(options.output, projectPath);
+      mkdirSync(sessionDir, { recursive: true });
+      debug("Output path:", outputPath);
+      debug("Session dir:", sessionDir);
       writeFileSync(outputPath, resume);
-      writeFileSync(join(handoffDir, "session.json"), JSON.stringify(session, null, 2));
+      writeFileSync(join(sessionDir, "session.json"), JSON.stringify(session, null, 2));
 
-      // 8. Try clipboard copy
+      // 8. Try clipboard copy (unless --no-clipboard)
       let clipboardOk = false;
-      try {
-        const { default: clipboard } = await import("clipboardy");
-        await clipboard.write(resume);
-        clipboardOk = true;
-      } catch {
-        // Clipboard not available
+      if (options.clipboard !== false) {
+        try {
+          const { default: clipboard } = await import("clipboardy");
+          await clipboard.write(resume);
+          clipboardOk = true;
+        } catch {
+          debug("Clipboard not available — skipping copy");
+        }
+      } else {
+        debug("Clipboard copy skipped (--no-clipboard)");
       }
       spinner.succeed(`Written to ${outputPath}`);
 
@@ -277,8 +329,12 @@ program
         console.log(`  ${chalk.dim("Dropped:")}    ${chalk.yellow(compressed.droppedLayers.join(", "))}`);
       }
       console.log(`  ${chalk.dim("Output:")}     ${outputPath}`);
-      if (clipboardOk) {
+      if (options.clipboard === false) {
+        console.log(`  ${chalk.dim("Clipboard:")}  ${chalk.dim("skipped")}`);
+      } else if (clipboardOk) {
         console.log(`  ${chalk.dim("Clipboard:")}  ${chalk.green("copied!")}`);
+      } else {
+        console.log(`  ${chalk.dim("Clipboard:")}  ${chalk.yellow("unavailable")} ${chalk.dim("(copy .handoff/RESUME.md manually)")}`);
       }
       console.log();
     } catch (err) {
@@ -398,7 +454,7 @@ program
   .description("Show agent storage paths, context window sizes, and config")
   .action(async () => {
     const platform = process.platform as string;
-    console.log(`\n  ${chalk.bold("AgentRelay")} ${chalk.dim("v0.2.0")} ${chalk.dim(`(${platform})`)}\n`);
+    console.log(`\n  ${chalk.bold("AgentRelay")} ${chalk.dim("v0.3.0")} ${chalk.dim(`(${platform})`)}\n`);
     for (const meta of Object.values(AGENT_REGISTRY)) {
       const storagePath = meta.storagePaths[platform] || "N/A";
       console.log(`  ${chalk.bold(meta.name)} ${chalk.dim(`(${meta.id})`)}`);

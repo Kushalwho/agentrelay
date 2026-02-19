@@ -1,6 +1,6 @@
 {
   "name": "agentrelay",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A CLI tool that captures your AI coding agent session and generates a portable resume prompt so you can seamlessly continue in a different agent.",
   "type": "module",
   "main": "dist/cli/index.js",
@@ -32,6 +32,13 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/Kushalwho/agentrelay.git"
+  },
+  "homepage": "https://github.com/Kushalwho/agentrelay#readme",
+  "bugs": {
+    "url": "https://github.com/Kushalwho/agentrelay/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist",
