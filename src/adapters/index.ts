@@ -30,14 +30,40 @@ export function getAllAdapters(): AgentAdapter[] {
  * Detect which agents are installed on this machine.
  */
 export async function detectAgents(): Promise<DetectResult[]> {
-  // TODO: Run detect() on each adapter and collect results
-  throw new Error("Not implemented");
+  const results: DetectResult[] = [];
+  for (const adapter of Object.values(adapters)) {
+    let detected = false;
+    try {
+      detected = await adapter.detect();
+    } catch {
+      detected = false;
+    }
+    const meta = await import("../core/registry.js").then(
+      (m) => m.AGENT_REGISTRY[adapter.agentId]
+    );
+    const platform = process.platform as string;
+    const storagePath = meta.storagePaths[platform] || "unknown";
+    results.push({
+      agentId: adapter.agentId,
+      detected,
+      path: storagePath,
+    });
+  }
+  return results;
 }
 
 /**
  * Auto-detect the most recently active agent for the given project path.
+ * Returns the first adapter that is detected, or null if none found.
  */
 export async function autoDetectSource(projectPath?: string): Promise<AgentAdapter | null> {
-  // TODO: Check each adapter, find the one with the most recent session
-  throw new Error("Not implemented");
+  for (const adapter of Object.values(adapters)) {
+    try {
+      const detected = await adapter.detect();
+      if (detected) return adapter;
+    } catch {
+      // skip this adapter
+    }
+  }
+  return null;
 }
