@@ -278,8 +278,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       );
     }
 
-    const captured = await this.capture(sessions[0].id);
-    return validateSession(captured) as CapturedSession;
+    return this.capture(sessions[0].id);
   }
 
   // ---------------------------------------------------------------------------

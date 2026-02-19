@@ -242,8 +242,7 @@ export class CodexAdapter extends BaseAdapter {
           : "No Codex sessions found",
       );
     }
-    const captured = await this.capture(sessions[0].id);
-    return validateSession(captured) as CapturedSession;
+    return this.capture(sessions[0].id);
   }
 
   private async readSessionInfo(filePath: string): Promise<SessionInfo | null> {

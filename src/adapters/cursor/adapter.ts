@@ -136,7 +136,7 @@ export class CursorAdapter extends BaseAdapter {
             lastActiveAt: composer.lastActiveAt,
             messageCount: composer.messageCount,
             projectPath:
-              candidate.resolvedProjectPath ||
+              candidate.resolvedProjectPath ??
               (projectPath && this.matchesWorkspaceHash(projectPath, candidate.workspaceHash)
                 ? projectPath
                 : undefined),
@@ -312,8 +312,7 @@ export class CursorAdapter extends BaseAdapter {
           : "No Cursor sessions found",
       );
     }
-    const captured = await this.capture(sessions[0].id);
-    return validateSession(captured) as CapturedSession;
+    return this.capture(sessions[0].id);
   }
 
   private openDatabase(dbPath: string): Database.Database {
