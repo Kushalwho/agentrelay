@@ -144,6 +144,44 @@ describe("CodexAdapter", () => {
         ),
       ).toBe(true);
     });
+
+    it("should handle empty JSONL file", async () => {
+      const emptySessionId = "rollout-2026-02-21T08-00-00-empty";
+      const emptyFile = path.join(sessionsDir, `${emptySessionId}.jsonl`);
+      fs.writeFileSync(emptyFile, "");
+
+      const session = await adapter.capture(emptySessionId);
+      expect(session.sessionId).toBe(emptySessionId);
+      expect(session.conversation.messages.length).toBe(0);
+      expect(session.task.description).toBe("Unknown task");
+    });
+
+    it("should handle JSONL with only system entries", async () => {
+      const systemOnlyId = "rollout-2026-02-21T09-00-00-system";
+      const systemOnlyFile = path.join(sessionsDir, `${systemOnlyId}.jsonl`);
+      const lines = [
+        JSON.stringify({
+          role: "developer",
+          content: "System-only directive",
+          timestamp: "2026-02-21T09:00:00Z",
+          cwd: "/tmp/codex-system",
+        }),
+        JSON.stringify({
+          role: "developer",
+          content: "Another system note",
+          timestamp: "2026-02-21T09:01:00Z",
+          cwd: "/tmp/codex-system",
+        }),
+      ];
+      fs.writeFileSync(systemOnlyFile, `${lines.join("\n")}\n`);
+
+      const session = await adapter.capture(systemOnlyId);
+      expect(session.conversation.messages.length).toBe(2);
+      expect(session.conversation.messages.every((m) => m.role === "system")).toBe(
+        true,
+      );
+      expect(session.task.description).toBe("Unknown task");
+    });
   });
 
   describe("captureLatest", () => {

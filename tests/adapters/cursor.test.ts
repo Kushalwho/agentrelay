@@ -114,6 +114,67 @@ describe("CursorAdapter", () => {
       expect(sessions.some((s) => s.id === legacySessionId)).toBe(true);
       expect(sessions[0].projectPath).toContain("cursor-modern");
     });
+
+    it("should handle missing workspace.json gracefully", async () => {
+      const missingWorkspaceHash = "ws-no-workspace-json";
+      const workspaceDir = path.join(workspaceStorageDir, missingWorkspaceHash);
+      fs.mkdirSync(workspaceDir, { recursive: true });
+      buildWorkspaceDb(
+        path.join(workspaceDir, "state.vscdb"),
+        {
+          allComposers: [
+            {
+              composerId: "no-workspace-json-composer",
+              createdAt: "2026-02-20T12:00:00Z",
+              lastUpdatedAt: "2026-02-20T12:02:00Z",
+              messageCount: 1,
+              title: "No workspace json",
+            },
+          ],
+        },
+        {
+          "bubbleId:no-workspace-json-composer:1": {
+            role: "user",
+            content: "hello",
+            timestamp: "2026-02-20T12:00:00Z",
+          },
+        },
+      );
+
+      const sessions = await adapter.listSessions();
+      expect(
+        sessions.some(
+          (session) => session.id === `${missingWorkspaceHash}:no-workspace-json-composer`,
+        ),
+      ).toBe(true);
+    });
+
+    it("should fall back to most recent state.vscdb when no exact project match", async () => {
+      const modernDb = path.join(workspaceStorageDir, "ws-modern", "state.vscdb");
+      const legacyDb = path.join(workspaceStorageDir, "ws-legacy", "state.vscdb");
+
+      fs.rmSync(path.join(workspaceStorageDir, "ws-modern", "workspace.json"), {
+        force: true,
+      });
+      fs.rmSync(path.join(workspaceStorageDir, "ws-legacy", "workspace.json"), {
+        force: true,
+      });
+
+      fs.utimesSync(
+        legacyDb,
+        new Date("2026-02-20T11:00:00Z"),
+        new Date("2026-02-20T11:00:00Z"),
+      );
+      fs.utimesSync(
+        modernDb,
+        new Date("2026-02-20T12:00:00Z"),
+        new Date("2026-02-20T12:00:00Z"),
+      );
+
+      const sessions = await adapter.listSessions("/tmp/not-an-existing-project");
+      expect(sessions.length).toBeGreaterThan(0);
+      expect(sessions[0].id.startsWith("ws-modern:")).toBe(true);
+    });
   });
 
   describe("capture", () => {

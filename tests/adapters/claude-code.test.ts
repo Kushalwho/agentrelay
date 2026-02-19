@@ -215,6 +215,79 @@ describe("ClaudeCodeAdapter", () => {
       expect(session.conversation.messages.length).toBe(10);
     });
 
+    it("should handle very large session files (1000+ messages)", async () => {
+      const largeSessionId = "test-session-large";
+      const largeSessionFile = path.join(sessionDir, `${largeSessionId}.jsonl`);
+
+      const lines: string[] = [];
+      for (let i = 0; i < 1002; i++) {
+        lines.push(
+          JSON.stringify({
+            type: i % 2 === 0 ? "human" : "assistant",
+            message: {
+              role: i % 2 === 0 ? "user" : "assistant",
+              id: `msg-${i}`,
+              content: [{ type: "text", text: `message-${i}` }],
+              usage:
+                i % 2 === 0
+                  ? undefined
+                  : { input_tokens: 2, output_tokens: 3 },
+            },
+            timestamp: new Date(2026, 1, 20, 10, 0, i).toISOString(),
+          }),
+        );
+      }
+      fs.writeFileSync(largeSessionFile, `${lines.join("\n")}\n`);
+
+      const session = await adapter.capture(largeSessionId);
+      expect(session.conversation.messages.length).toBe(1002);
+      expect(session.conversation.messageCount).toBe(1002);
+    });
+
+    it("should skip duplicate messages", async () => {
+      const duplicateSessionId = "test-session-duplicates";
+      const duplicateSessionFile = path.join(
+        sessionDir,
+        `${duplicateSessionId}.jsonl`,
+      );
+      const lines = [
+        JSON.stringify({
+          type: "human",
+          message: {
+            id: "dup-1",
+            role: "user",
+            content: [{ type: "text", text: "Build endpoint" }],
+          },
+          timestamp: "2026-02-20T10:00:00Z",
+        }),
+        JSON.stringify({
+          type: "human",
+          message: {
+            id: "dup-1",
+            role: "user",
+            content: [{ type: "text", text: "Build endpoint" }],
+          },
+          timestamp: "2026-02-20T10:00:01Z",
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            id: "dup-2",
+            role: "assistant",
+            content: [{ type: "text", text: "Done." }],
+            usage: { input_tokens: 10, output_tokens: 5 },
+          },
+          timestamp: "2026-02-20T10:00:02Z",
+        }),
+      ];
+      fs.writeFileSync(duplicateSessionFile, `${lines.join("\n")}\n`);
+
+      const session = await adapter.capture(duplicateSessionId);
+      expect(session.conversation.messages.length).toBe(2);
+      expect(session.conversation.messages[0].content).toBe("Build endpoint");
+      expect(session.conversation.messages[1].content).toBe("Done.");
+    });
+
     it("should enrich project context from filesystem", async () => {
       const projectRoot = path.join(
         os.tmpdir(),

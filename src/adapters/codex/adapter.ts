@@ -7,6 +7,7 @@ import { glob } from "glob";
 import { BaseAdapter } from "../base-adapter.js";
 import { analyzeConversation } from "../../core/conversation-analyzer.js";
 import { extractProjectContext } from "../../core/project-context.js";
+import { validateSession } from "../../core/validation.js";
 import type {
   AgentId,
   CapturedSession,
@@ -200,7 +201,7 @@ export class CodexAdapter extends BaseAdapter {
     const projectContext = await extractProjectContext(inferredProjectPath);
     const analysis = analyzeConversation(messages);
 
-    return {
+    const session: CapturedSession = {
       version: "1.0",
       source: "codex",
       capturedAt: new Date().toISOString(),
@@ -229,6 +230,7 @@ export class CodexAdapter extends BaseAdapter {
         blockers: analysis.blockers,
       },
     };
+    return validateSession(session) as CapturedSession;
   }
 
   async captureLatest(projectPath?: string): Promise<CapturedSession> {
@@ -240,7 +242,8 @@ export class CodexAdapter extends BaseAdapter {
           : "No Codex sessions found",
       );
     }
-    return this.capture(sessions[0].id);
+    const captured = await this.capture(sessions[0].id);
+    return validateSession(captured) as CapturedSession;
   }
 
   private async readSessionInfo(filePath: string): Promise<SessionInfo | null> {
