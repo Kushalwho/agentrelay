@@ -1,5 +1,20 @@
 import path from "node:path";
-import type { CapturedSession, CompressionResult } from "../types/index.js";
+import type { AgentId, CapturedSession, CompressionResult } from "../types/index.js";
+
+const TARGET_HINTS: Record<string, { label: string; footer: string }> = {
+  cursor: {
+    label: "Cursor (paste into Composer)",
+    footer: "Paste this into Cursor's Composer to continue.",
+  },
+  codex: {
+    label: "Codex CLI",
+    footer: "Feed this to Codex CLI with `codex resume` or paste it.",
+  },
+  "claude-code": {
+    label: "Claude Code",
+    footer: "Paste this into a new Claude Code session to continue.",
+  },
+};
 
 /**
  * Builds the self-summarizing resume prompt (RESUME.md).
@@ -7,7 +22,8 @@ import type { CapturedSession, CompressionResult } from "../types/index.js";
  */
 export function buildResumePrompt(
   session: CapturedSession,
-  compressed: CompressionResult
+  compressed: CompressionResult,
+  targetAgent?: AgentId | "clipboard" | "file"
 ): string {
   const projectName =
     session.project.name || path.basename(session.project.path);
@@ -31,11 +47,16 @@ export function buildResumePrompt(
     session.task.remaining[0] ||
     "the next logical step";
 
+  const targetHint = targetAgent && TARGET_HINTS[targetAgent]
+    ? TARGET_HINTS[targetAgent]
+    : null;
+
   const lines: string[] = [
     `# AgentRelay — Session Handoff`,
     ``,
     `> **Source:** ${session.source} | **Captured:** ${session.capturedAt}`,
     `> **Project:** ${projectName} (${session.project.path}) | Branch: \`${gitBranch}\``,
+    ...(targetHint ? [`> **Target:** ${targetHint.label}`] : []),
     ``,
     `---`,
     ``,
@@ -77,6 +98,8 @@ export function buildResumePrompt(
     ``,
     `Continue the work described above. Start with ${resumeAction}.`,
     `Do not ask for confirmation. Do not summarize. Just continue building.`,
+    ``,
+    targetHint ? targetHint.footer : "Paste into your target agent.",
   ];
 
   return lines.join("\n");

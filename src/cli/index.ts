@@ -2,6 +2,7 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import ora from "ora";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { detectAgents, autoDetectSource, getAdapter } from "../adapters/index.js";
@@ -108,30 +109,44 @@ program
   .action(async (options) => {
     try {
       const projectPath = options.project || process.cwd();
+
+      // 1. Detect source
+      let spinner = ora("Detecting source agent...").start();
       const adapter = options.source
         ? getAdapter(options.source as AgentId)
         : await autoDetectSource(projectPath);
 
       if (!adapter) {
-        console.error(chalk.red("No agent detected."), "Use --source to specify one.");
+        spinner.fail("No agent detected.");
+        console.error("Use --source to specify one.");
         process.exit(1);
       }
-      console.log(`Capturing from ${chalk.bold(adapter.agentId)}...`);
+      spinner.succeed(`Source: ${adapter.agentId}`);
 
+      // 2. Capture session
+      spinner = ora("Capturing session...").start();
       const session = options.session
         ? await adapter.capture(options.session)
         : await adapter.captureLatest(projectPath);
+      spinner.succeed(`Captured ${session.conversation.messageCount} messages`);
 
-      // Enrich with project context
+      // 3. Enrich with project context
+      spinner = ora("Enriching with project context...").start();
       const context = await extractProjectContext(projectPath);
       session.project = { ...session.project, ...context };
+      spinner.succeed("Project context enriched");
 
+      // 4. Write output
+      spinner = ora("Writing session file...").start();
       const handoffDir = join(projectPath, ".handoff");
       mkdirSync(handoffDir, { recursive: true });
       writeFileSync(join(handoffDir, "session.json"), JSON.stringify(session, null, 2));
+      spinner.succeed(`Written to ${join(handoffDir, "session.json")}`);
 
-      console.log(chalk.green("Captured:"), `${session.conversation.messageCount} messages, ~${session.conversation.estimatedTokens} tokens`);
-      console.log(chalk.dim(`Written to ${join(handoffDir, "session.json")}`));
+      console.log();
+      console.log(`  ${chalk.dim("Messages:")}  ${session.conversation.messageCount}`);
+      console.log(`  ${chalk.dim("Tokens:")}    ~${session.conversation.estimatedTokens}`);
+      console.log();
     } catch (err) {
       console.error(chalk.red("Capture error:"), (err as Error).message);
       process.exit(3);
@@ -152,54 +167,61 @@ program
       const projectPath = options.project || process.cwd();
 
       // 1. Determine source adapter
+      let spinner = ora("Detecting source agent...").start();
       let adapter;
       if (options.source) {
         adapter = getAdapter(options.source as AgentId);
         if (!adapter) {
-          console.error(chalk.red(`Unknown source agent: ${options.source}`));
+          spinner.fail(`Unknown source agent: ${options.source}`);
           process.exit(1);
         }
+        spinner.succeed(`Source: ${adapter.agentId}`);
       } else {
-        console.log(chalk.dim("Auto-detecting source agent..."));
         adapter = await autoDetectSource(projectPath);
         if (!adapter) {
-          console.error(chalk.red("No source agent detected."), "Use --source to specify one.");
+          spinner.fail("No source agent detected.");
+          console.error("Use --source to specify one.");
           process.exit(1);
         }
-        console.log(`  Source: ${chalk.bold(adapter.agentId)}`);
+        spinner.succeed(`Source: ${adapter.agentId}`);
       }
 
       // 2. Capture session
       let session;
-      console.log(chalk.dim("Capturing session..."));
+      spinner = ora("Capturing session...").start();
       try {
         if (options.session) {
           session = await adapter.capture(options.session);
         } else {
           session = await adapter.captureLatest(projectPath);
         }
+        spinner.succeed(`Captured ${session.conversation.messageCount} messages`);
       } catch (err) {
-        console.error(chalk.red("Failed to capture session:"), (err as Error).message);
+        spinner.fail("Failed to capture session");
+        console.error((err as Error).message);
         process.exit(3);
       }
 
       // 3. Enrich with project context (git, tree, memory files)
-      console.log(chalk.dim("Enriching with project context..."));
+      spinner = ora("Enriching with project context...").start();
       const context = await extractProjectContext(projectPath);
       session.project = { ...session.project, ...context };
+      spinner.succeed("Project context enriched");
 
       // 4. Compress
       const targetTokens = options.tokens
         ? parseInt(options.tokens, 10)
         : undefined;
       const target = (options.target as AgentId | "clipboard" | "file") || "file";
-      console.log(chalk.dim("Compressing..."));
+      spinner = ora("Compressing...").start();
       const compressed = compress(session, { targetTokens, targetAgent: target });
+      spinner.succeed(`Compressed to ${compressed.totalTokens} tokens`);
 
       // 5. Build resume prompt
-      const resume = buildResumePrompt(session, compressed);
+      const resume = buildResumePrompt(session, compressed, target);
 
       // 6. Write to .handoff/
+      spinner = ora("Writing handoff files...").start();
       const handoffDir = join(projectPath, ".handoff");
       mkdirSync(handoffDir, { recursive: true });
       const outputPath = join(handoffDir, "RESUME.md");
@@ -215,6 +237,7 @@ program
       } catch {
         // Clipboard not available
       }
+      spinner.succeed(`Written to ${outputPath}`);
 
       // 8. Print results
       const budget = targetTokens || getUsableTokenBudget(target);

@@ -129,4 +129,42 @@ describe("Prompt Builder", () => {
     expect(result).toContain("- None");
     expect(result).toContain("Start with the next logical step");
   });
+
+  describe("target agent hints", () => {
+    it("should add Cursor target hint and footer", () => {
+      const result = buildResumePrompt(mockSession, mockCompressed, "cursor");
+      expect(result).toContain("**Target:** Cursor (paste into Composer)");
+      expect(result).toContain("Paste this into Cursor's Composer to continue.");
+    });
+
+    it("should add Codex target hint and footer", () => {
+      const result = buildResumePrompt(mockSession, mockCompressed, "codex");
+      expect(result).toContain("**Target:** Codex CLI");
+      expect(result).toContain("Feed this to Codex CLI with `codex resume` or paste it.");
+    });
+
+    it("should add Claude Code target hint and footer", () => {
+      const result = buildResumePrompt(mockSession, mockCompressed, "claude-code");
+      expect(result).toContain("**Target:** Claude Code");
+      expect(result).toContain("Paste this into a new Claude Code session to continue.");
+    });
+
+    it("should use generic footer for file target", () => {
+      const result = buildResumePrompt(mockSession, mockCompressed, "file");
+      expect(result).not.toContain("**Target:**");
+      expect(result).toContain("Paste into your target agent.");
+    });
+
+    it("should use generic footer when no target is specified", () => {
+      const result = buildResumePrompt(mockSession, mockCompressed);
+      expect(result).not.toContain("**Target:**");
+      expect(result).toContain("Paste into your target agent.");
+    });
+
+    it("should use generic footer for clipboard target", () => {
+      const result = buildResumePrompt(mockSession, mockCompressed, "clipboard");
+      expect(result).not.toContain("**Target:**");
+      expect(result).toContain("Paste into your target agent.");
+    });
+  });
 });
