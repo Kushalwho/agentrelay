@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { ResumeProvider, ProviderOptions } from "../types/index.js";
 
 /**
@@ -5,7 +7,9 @@ import type { ResumeProvider, ProviderOptions } from "../types/index.js";
  */
 export class FileProvider implements ResumeProvider {
   async deliver(content: string, options?: ProviderOptions): Promise<void> {
-    // TODO: Create .handoff/ directory if needed, write RESUME.md
-    throw new Error("Not implemented");
+    const projectPath = options?.projectPath ?? process.cwd();
+    const handoffDir = path.join(projectPath, ".handoff");
+    fs.mkdirSync(handoffDir, { recursive: true });
+    fs.writeFileSync(path.join(handoffDir, "RESUME.md"), content, "utf-8");
   }
 }
