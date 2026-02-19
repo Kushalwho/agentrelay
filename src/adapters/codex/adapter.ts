@@ -119,6 +119,30 @@ export class CodexAdapter extends BaseAdapter {
 
       totalTokens += this.extractUsageTokens(entry);
 
+      const responseItem = this.responseItemPayload(entry);
+      if (responseItem?.type === "function_call" && responseItem.name) {
+        const input = this.parseFunctionCallInput(responseItem.arguments);
+        messages.push({
+          role: "tool",
+          content: JSON.stringify(input ?? {}),
+          toolName: responseItem.name,
+          timestamp,
+        });
+        this.recordFileChange(fileChanges, responseItem.name, input);
+      }
+
+      if (responseItem?.type === "function_call_output") {
+        const output =
+          typeof responseItem.output === "string"
+            ? responseItem.output
+            : JSON.stringify(responseItem.output ?? "");
+        messages.push({
+          role: "tool",
+          content: output,
+          timestamp,
+        });
+      }
+
       const directRole = this.entryRole(entry);
       const directContent = this.entryContent(entry);
       if (directRole && directContent != null) {
@@ -344,6 +368,21 @@ export class CodexAdapter extends BaseAdapter {
   }
 
   private entryRole(entry: CodexEntry): string | undefined {
+    if (
+      entry.payload &&
+      typeof entry.payload.role === "string" &&
+      entry.payload.role
+    ) {
+      return entry.payload.role;
+    }
+    if (
+      entry.payload &&
+      entry.payload.message &&
+      typeof entry.payload.message.role === "string" &&
+      entry.payload.message.role
+    ) {
+      return entry.payload.message.role;
+    }
     if (entry.message && typeof entry.message.role === "string") {
       return entry.message.role;
     }
@@ -354,7 +393,26 @@ export class CodexAdapter extends BaseAdapter {
   }
 
   private entryContent(entry: CodexEntry): unknown {
-    if (entry.message && "content" in entry.message) {
+    if (
+      entry.payload &&
+      "content" in entry.payload &&
+      entry.payload.content != null
+    ) {
+      return entry.payload.content;
+    }
+    const payloadMessage = entry.payload?.message;
+    if (
+      payloadMessage &&
+      typeof payloadMessage === "object" &&
+      "content" in payloadMessage
+    ) {
+      return payloadMessage.content;
+    }
+    if (
+      entry.message &&
+      typeof entry.message === "object" &&
+      "content" in entry.message
+    ) {
       return entry.message.content;
     }
     return entry.content;
@@ -367,6 +425,21 @@ export class CodexAdapter extends BaseAdapter {
     if (typeof entry.timestamp === "string") {
       return entry.timestamp;
     }
+    if (
+      entry.payload &&
+      typeof entry.payload.timestamp === "string" &&
+      entry.payload.timestamp
+    ) {
+      return entry.payload.timestamp;
+    }
+    if (
+      entry.payload &&
+      entry.payload.message &&
+      typeof entry.payload.message.timestamp === "string" &&
+      entry.payload.message.timestamp
+    ) {
+      return entry.payload.message.timestamp;
+    }
     if (entry.message && typeof entry.message.timestamp === "string") {
       return entry.message.timestamp;
     }
@@ -374,7 +447,11 @@ export class CodexAdapter extends BaseAdapter {
   }
 
   private extractUsageTokens(entry: CodexEntry): number {
-    const usage = entry.message?.usage ?? entry.usage;
+    const usage =
+      entry.payload?.message?.usage ??
+      entry.payload?.usage ??
+      entry.message?.usage ??
+      entry.usage;
     if (!usage) {
       return 0;
     }
@@ -428,9 +505,11 @@ export class CodexAdapter extends BaseAdapter {
 
       if (
         (type === "text" || type === "output_text" || type === "input_text") &&
-        typeof block.text === "string"
+        (typeof block.text === "string" || typeof block.content === "string")
       ) {
-        textParts.push(block.text);
+        textParts.push(
+          typeof block.text === "string" ? block.text : String(block.content),
+        );
         continue;
       }
 
@@ -464,6 +543,34 @@ export class CodexAdapter extends BaseAdapter {
       toolCalls,
       toolResults,
     };
+  }
+
+  private responseItemPayload(
+    entry: CodexEntry,
+  ): CodexResponseItemPayload | undefined {
+    if (
+      entry.type !== "response_item" ||
+      !entry.payload ||
+      typeof entry.payload !== "object"
+    ) {
+      return undefined;
+    }
+    return entry.payload;
+  }
+
+  private parseFunctionCallInput(raw: unknown): unknown {
+    if (typeof raw !== "string") {
+      return raw;
+    }
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return {};
+    }
+    try {
+      return JSON.parse(trimmed) as unknown;
+    } catch {
+      return { raw: trimmed };
+    }
   }
 
   private recordFileChange(
@@ -556,7 +663,31 @@ interface CodexEntry {
   timestamp?: string;
   cwd?: string;
   payload?: {
+    type?: string;
+    role?: string;
+    content?: unknown;
+    timestamp?: string;
     cwd?: string;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      prompt_tokens?: number;
+      completion_tokens?: number;
+    };
+    name?: string;
+    arguments?: unknown;
+    output?: unknown;
+    message?: {
+      role?: string;
+      content?: unknown;
+      timestamp?: string;
+      usage?: {
+        input_tokens?: number;
+        output_tokens?: number;
+        prompt_tokens?: number;
+        completion_tokens?: number;
+      };
+    };
   };
   usage?: {
     input_tokens?: number;
@@ -582,4 +713,11 @@ interface CodexEntry {
     name?: string;
     input?: unknown;
   }>;
+}
+
+interface CodexResponseItemPayload {
+  type?: string;
+  name?: string;
+  arguments?: unknown;
+  output?: unknown;
 }

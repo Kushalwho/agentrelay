@@ -14,6 +14,12 @@ describe("CodexAdapter", () => {
     "fixtures",
     "codex-session.jsonl",
   );
+  const RESPONSE_ITEM_FIXTURE_PATH = path.resolve(
+    __dirname,
+    "..",
+    "fixtures",
+    "codex-response-item-session.jsonl",
+  );
 
   const SESSION_ID = "rollout-2026-02-20T09-00-00-main-session";
 
@@ -239,6 +245,49 @@ describe("CodexAdapter", () => {
 
       const session = await adapter.capture(metaSessionId);
       expect(session.project.path).toBe(metaProjectPath);
+    });
+
+    it("should parse response_item payload messages from Codex VS Code sessions", async () => {
+      fs.copyFileSync(RESPONSE_ITEM_FIXTURE_PATH, sessionFile);
+
+      const session = await adapter.capture(SESSION_ID);
+      expect(session.conversation.messages.length).toBeGreaterThan(6);
+      expect(
+        session.conversation.messages.some(
+          (msg) =>
+            msg.role === "user" &&
+            msg.content.includes("Build a markdown search CLI"),
+        ),
+      ).toBe(true);
+      expect(
+        session.conversation.messages.some(
+          (msg) =>
+            msg.role === "assistant" &&
+            msg.content.includes("I'll use ripgrep instead of grep"),
+        ),
+      ).toBe(true);
+      expect(
+        session.conversation.messages.some(
+          (msg) =>
+            msg.role === "system" &&
+            msg.content.includes("Prefer TypeScript strict mode"),
+        ),
+      ).toBe(true);
+      expect(session.task.description).toContain("Build a markdown search CLI");
+      expect(
+        session.task.completed.some((step) =>
+          step.includes("Created CLI entrypoint"),
+        ),
+      ).toBe(true);
+      expect(
+        session.decisions.some((decision) =>
+          decision.toLowerCase().includes("instead of grep"),
+        ),
+      ).toBe(true);
+      expect(session.project.path).toBe("/tmp/codex-vscode");
+      expect(session.filesChanged.map((f) => f.path)).toEqual(
+        expect.arrayContaining(["src/search.ts", "src/cli.ts"]),
+      );
     });
   });
 
