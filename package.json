@@ -1,6 +1,6 @@
 {
   "name": "braindump",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "A CLI tool that captures your AI coding agent session and generates a portable resume prompt so you can seamlessly continue in a different agent.",
   "type": "module",
   "main": "dist/cli/index.js",

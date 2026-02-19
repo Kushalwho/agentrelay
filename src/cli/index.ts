@@ -37,7 +37,7 @@ program
   .description(
     "Capture your AI coding agent session and continue in a different agent."
   )
-  .version("0.4.4");
+  .version("0.4.5");
 
 // --- runHandoff (extracted for default command) ---
 async function runHandoff(options: {
@@ -604,7 +604,7 @@ program
   .command("info")
   .description("Show agent storage paths, context window sizes, and config")
   .action(async () => {
-    console.log(banner("0.4.4"));
+    console.log(banner("0.4.5"));
     for (const meta of Object.values(AGENT_REGISTRY)) {
       const storagePath = meta.storagePaths[process.platform] || "N/A";
       console.log(`  ${chalk.bold(meta.name)} ${chalk.dim(`(${meta.id})`)}`);
