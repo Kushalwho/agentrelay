@@ -22,7 +22,17 @@ import type {
 export class CursorAdapter extends BaseAdapter {
   agentId: AgentId = "cursor";
 
+  private _workspaceStorageDir: string | undefined;
+
   private get workspaceStorageDir(): string {
+    if (this._workspaceStorageDir) {
+      return this._workspaceStorageDir;
+    }
+    this._workspaceStorageDir = this.resolveWorkspaceStorageDir();
+    return this._workspaceStorageDir;
+  }
+
+  private resolveWorkspaceStorageDir(): string {
     if (process.platform === "darwin") {
       return path.join(
         os.homedir(),
@@ -34,19 +44,75 @@ export class CursorAdapter extends BaseAdapter {
       );
     }
     if (process.platform === "linux") {
-      return path.join(
+      // Check native Linux path first
+      const linuxPath = path.join(
         os.homedir(),
         ".config",
         "Cursor",
         "User",
         "workspaceStorage",
       );
+      if (fs.existsSync(linuxPath)) {
+        return linuxPath;
+      }
+
+      // Fall back to Windows path via WSL mount
+      const wslPath = this.detectWslCursorPath();
+      if (wslPath) {
+        return wslPath;
+      }
+
+      return linuxPath;
     }
 
     const appData =
       process.env.APPDATA ||
       path.join(os.homedir(), "AppData", "Roaming");
     return path.join(appData, "Cursor", "User", "workspaceStorage");
+  }
+
+  /**
+   * Detect Cursor's workspace storage via WSL's /mnt/c mount.
+   * Returns the path if found, undefined otherwise.
+   */
+  private detectWslCursorPath(): string | undefined {
+    try {
+      // Check if running under WSL
+      if (!fs.existsSync("/proc/version")) {
+        return undefined;
+      }
+      const procVersion = fs.readFileSync("/proc/version", "utf-8");
+      if (!/microsoft/i.test(procVersion)) {
+        return undefined;
+      }
+
+      // Find Windows user directories under /mnt/c/Users
+      const usersDir = "/mnt/c/Users";
+      if (!fs.existsSync(usersDir)) {
+        return undefined;
+      }
+
+      const userDirs = fs.readdirSync(usersDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && !["Public", "Default", "Default User", "All Users"].includes(e.name));
+
+      for (const userDir of userDirs) {
+        const cursorPath = path.join(
+          usersDir,
+          userDir.name,
+          "AppData",
+          "Roaming",
+          "Cursor",
+          "User",
+          "workspaceStorage",
+        );
+        if (fs.existsSync(cursorPath)) {
+          return cursorPath;
+        }
+      }
+    } catch {
+      // WSL detection failed — not critical
+    }
+    return undefined;
   }
 
   async detect(): Promise<boolean> {

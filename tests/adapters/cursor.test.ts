@@ -99,6 +99,12 @@ describe("CursorAdapter", () => {
       const missingHome = path.join(os.tmpdir(), `missing-home-${Date.now()}`);
       vi.spyOn(os, "homedir").mockReturnValue(missingHome);
       process.env.APPDATA = path.join(missingHome, "AppData", "Roaming");
+      // Prevent WSL fallback from finding real Windows Cursor install
+      const origReadFileSync = fs.readFileSync;
+      vi.spyOn(fs, "readFileSync").mockImplementation((p, ...rest) => {
+        if (String(p) === "/proc/version") return "Linux mock";
+        return origReadFileSync(p, ...rest);
+      });
       const emptyAdapter = new CursorAdapter();
       const detected = await emptyAdapter.detect();
       expect(detected).toBe(false);
