@@ -7,6 +7,10 @@ import type {
 import { ClaudeCodeAdapter } from "./claude-code/adapter.js";
 import { CursorAdapter } from "./cursor/adapter.js";
 import { CodexAdapter } from "./codex/adapter.js";
+import { CopilotAdapter } from "./copilot/adapter.js";
+import { GeminiAdapter } from "./gemini/adapter.js";
+import { DroidAdapter } from "./droid/adapter.js";
+import { OpenCodeAdapter } from "./opencode/adapter.js";
 
 /**
  * Registry of all available adapters.
@@ -15,6 +19,10 @@ const adapters: Record<AgentId, AgentAdapter> = {
   "claude-code": new ClaudeCodeAdapter(),
   cursor: new CursorAdapter(),
   codex: new CodexAdapter(),
+  copilot: new CopilotAdapter(),
+  gemini: new GeminiAdapter(),
+  opencode: new OpenCodeAdapter(),
+  droid: new DroidAdapter(),
 };
 
 /**

@@ -13,6 +13,13 @@ export interface CapturedSession {
   decisions: string[];
   blockers: string[];
   task: TaskState;
+  toolActivity?: ToolActivitySummary[];
+}
+
+export interface ToolActivitySummary {
+  name: string;       // e.g. "Bash", "Edit", "Read"
+  count: number;      // e.g. 47
+  samples: string[];  // Up to 3 one-liner examples
 }
 
 export interface ProjectContext {
@@ -57,7 +64,7 @@ export interface TaskState {
 
 // === Agent Adapter Interface ===
 
-export type AgentId = "claude-code" | "cursor" | "codex";
+export type AgentId = "claude-code" | "cursor" | "codex" | "copilot" | "gemini" | "opencode" | "droid";
 
 export interface SessionInfo {
   id: string;

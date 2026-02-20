@@ -7,6 +7,7 @@ import { BaseAdapter } from "../base-adapter.js";
 import { analyzeConversation } from "../../core/conversation-analyzer.js";
 import { extractProjectContext } from "../../core/project-context.js";
 import { validateSession } from "../../core/validation.js";
+import { SummaryCollector } from "../../core/tool-summarizer.js";
 import type {
   AgentId,
   CapturedSession,
@@ -316,6 +317,7 @@ export class CursorAdapter extends BaseAdapter {
     const projectPath = this.readWorkspaceProjectPath(workspaceDir) || process.cwd();
     const messages: ConversationMessage[] = [];
     const fileChanges = new Map<string, FileChange>();
+    const collector = new SummaryCollector();
     let totalTokens = 0;
     let sessionStartedAt: string | undefined;
     let lastAssistantMessage = "";
@@ -323,18 +325,18 @@ export class CursorAdapter extends BaseAdapter {
     const db = this.openDatabase(dbPath);
     try {
       const bubbleRows = this.readBubbleRows(db, composerId);
-      this.collectParsedMessages(bubbleRows.map((r) => r.value), messages, fileChanges, (t) => { totalTokens += t; }, (ts) => { if (!sessionStartedAt) sessionStartedAt = ts; }, (msg) => { lastAssistantMessage = msg; });
+      this.collectParsedMessages(bubbleRows.map((r) => r.value), messages, fileChanges, collector, (t) => { totalTokens += t; }, (ts) => { if (!sessionStartedAt) sessionStartedAt = ts; }, (msg) => { lastAssistantMessage = msg; });
 
       if (messages.length === 0) {
         const composerData = this.getJsonValue(db, `composerData:${composerId}`);
         const fallbackPayloads = this.extractMessagesFromComposerData(composerData, composerId);
-        this.collectParsedMessages(fallbackPayloads, messages, fileChanges, (t) => { totalTokens += t; }, (ts) => { if (!sessionStartedAt) sessionStartedAt = ts; }, (msg) => { lastAssistantMessage = msg; });
+        this.collectParsedMessages(fallbackPayloads, messages, fileChanges, collector, (t) => { totalTokens += t; }, (ts) => { if (!sessionStartedAt) sessionStartedAt = ts; }, (msg) => { lastAssistantMessage = msg; });
       }
 
       if (messages.length === 0) {
         const legacy = this.getJsonValue(db, "workbench.panel.aichat.view.aichat.chatdata");
         const legacyPayloads = this.extractMessagesFromLegacy(legacy, composerId);
-        this.collectParsedMessages(legacyPayloads, messages, fileChanges, (t) => { totalTokens += t; }, (ts) => { if (!sessionStartedAt) sessionStartedAt = ts; }, (msg) => { lastAssistantMessage = msg; });
+        this.collectParsedMessages(legacyPayloads, messages, fileChanges, collector, (t) => { totalTokens += t; }, (ts) => { if (!sessionStartedAt) sessionStartedAt = ts; }, (msg) => { lastAssistantMessage = msg; });
       }
     } finally {
       db.close();
@@ -347,7 +349,7 @@ export class CursorAdapter extends BaseAdapter {
 
     return this.buildCapturedSession(
       sessionId, messages, fileChanges, totalTokens,
-      sessionStartedAt, lastAssistantMessage, projectPath,
+      sessionStartedAt, lastAssistantMessage, projectPath, collector,
     );
   }
 
@@ -367,6 +369,7 @@ export class CursorAdapter extends BaseAdapter {
     const db = this.openDatabase(dbPath);
     const messages: ConversationMessage[] = [];
     const fileChanges = new Map<string, FileChange>();
+    const collector = new SummaryCollector();
     let totalTokens = 0;
     let sessionStartedAt: string | undefined;
     let lastAssistantMessage = "";
@@ -401,6 +404,9 @@ export class CursorAdapter extends BaseAdapter {
         }
         for (const tm of parsed.toolMessages) {
           messages.push(tm);
+          if (tm.toolName) {
+            collector.record(tm.toolName, tm.toolName.toLowerCase());
+          }
         }
         for (const fc of parsed.fileChanges) {
           fileChanges.set(fc.path, fc);
@@ -414,7 +420,7 @@ export class CursorAdapter extends BaseAdapter {
     const projectPath = fallbackProjectPath || globalProjectPath || process.cwd();
     return this.buildCapturedSession(
       sessionId, messages, fileChanges, totalTokens,
-      sessionStartedAt, lastAssistantMessage, projectPath,
+      sessionStartedAt, lastAssistantMessage, projectPath, collector,
     );
   }
 
@@ -425,6 +431,7 @@ export class CursorAdapter extends BaseAdapter {
     payloads: unknown[],
     messages: ConversationMessage[],
     fileChanges: Map<string, FileChange>,
+    collector: SummaryCollector,
     addTokens: (n: number) => void,
     setStartedAt: (ts: string) => void,
     setLastAssistant: (msg: string) => void,
@@ -442,6 +449,9 @@ export class CursorAdapter extends BaseAdapter {
       }
       for (const toolMessage of parsed.toolMessages) {
         messages.push(toolMessage);
+        if (toolMessage.toolName) {
+          collector.record(toolMessage.toolName, toolMessage.toolName.toLowerCase());
+        }
       }
       for (const change of parsed.fileChanges) {
         fileChanges.set(change.path, change);
@@ -461,6 +471,7 @@ export class CursorAdapter extends BaseAdapter {
     sessionStartedAt: string | undefined,
     lastAssistantMessage: string,
     projectPath: string,
+    collector?: SummaryCollector,
   ): Promise<CapturedSession> {
     messages.sort((a, b) => {
       const aTime = a.timestamp || "";
@@ -499,6 +510,7 @@ export class CursorAdapter extends BaseAdapter {
           : undefined,
         blockers: analysis.blockers,
       },
+      toolActivity: collector?.getSummaries(),
     };
     return validateSession(session) as CapturedSession;
   }

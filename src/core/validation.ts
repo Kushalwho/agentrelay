@@ -35,7 +35,7 @@ export const ProjectContextSchema = z.object({
 
 export const CapturedSessionSchema = z.object({
   version: z.literal("1.0"),
-  source: z.enum(["claude-code", "cursor", "codex"]),
+  source: z.enum(["claude-code", "cursor", "codex", "copilot", "gemini", "opencode", "droid"]),
   capturedAt: z.string(),
   sessionId: z.string(),
   sessionStartedAt: z.string().optional(),
@@ -50,6 +50,11 @@ export const CapturedSessionSchema = z.object({
   decisions: z.array(z.string()),
   blockers: z.array(z.string()),
   task: TaskStateSchema,
+  toolActivity: z.array(z.object({
+    name: z.string(),
+    count: z.number(),
+    samples: z.array(z.string()),
+  })).optional(),
 });
 
 /**

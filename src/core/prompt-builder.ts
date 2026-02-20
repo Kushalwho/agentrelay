@@ -92,6 +92,21 @@ export function buildResumePrompt(
     ``,
     compressed.content,
     ``,
+    ...(session.toolActivity && session.toolActivity.length > 0
+      ? [
+          `---`,
+          ``,
+          `## Tool Activity`,
+          ``,
+          ...session.toolActivity.map((t) => {
+            const samplesStr = t.samples.length > 0
+              ? t.samples.map((s) => `\`${s}\``).join(" . ")
+              : "";
+            return `- **${t.name}** (x${t.count})${samplesStr ? ": " + samplesStr : ""}`;
+          }),
+          ``,
+        ]
+      : []),
     `---`,
     ``,
     `## Resume Now`,

@@ -8,6 +8,7 @@ import { BaseAdapter } from "../base-adapter.js";
 import { analyzeConversation } from "../../core/conversation-analyzer.js";
 import { extractProjectContext } from "../../core/project-context.js";
 import { validateSession } from "../../core/validation.js";
+import { SummaryCollector, shellSummary, fileSummary } from "../../core/tool-summarizer.js";
 import type {
   AgentId,
   CapturedSession,
@@ -107,6 +108,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     const messages: ConversationMessage[] = [];
     const fileChanges = new Map<string, FileChange>();
     const seenMessageIds = new Set<string>();
+    const collector = new SummaryCollector();
     let totalTokens = 0;
     let lastAssistantMessage = "";
     let sessionStartedAt: string | undefined;
@@ -188,13 +190,33 @@ export class ClaudeCodeAdapter extends BaseAdapter {
             timestamp: entry.timestamp,
           });
 
+          // Record tool activity
+          const input = block.input && typeof block.input === "object"
+            ? block.input as Record<string, unknown>
+            : undefined;
+          if (block.name === "Bash" || block.name === "bash") {
+            collector.record("Bash", shellSummary(String(input?.command ?? "")));
+          } else if (block.name === "Write" || block.name === "Edit") {
+            const fp = (input?.file_path ?? input?.path) as string | undefined;
+            if (fp) {
+              collector.record(block.name, fileSummary(fp, block.name === "Write" ? "create" : "edit"));
+            } else {
+              collector.record(block.name, block.name.toLowerCase());
+            }
+          } else if (block.name === "Read") {
+            const fp = (input?.file_path ?? input?.path) as string | undefined;
+            collector.record("Read", fileSummary(fp ?? "file", "read"));
+          } else if (block.name === "Grep" || block.name === "Glob" || block.name === "WebFetch" || block.name === "WebSearch" || block.name === "Task") {
+            collector.record(block.name, block.name.toLowerCase());
+          } else {
+            collector.record(block.name, block.name.toLowerCase());
+          }
+
           // Extract file changes from Write and Edit tool blocks
           if (
             (block.name === "Write" || block.name === "Edit") &&
-            block.input &&
-            typeof block.input === "object"
+            input
           ) {
-            const input = block.input as Record<string, unknown>;
             const filePth =
               (input.file_path as string | undefined) ??
               (input.path as string | undefined);
@@ -259,6 +281,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           : undefined,
         blockers: analysis.blockers,
       },
+      toolActivity: collector.getSummaries(),
     };
 
     return validateSession(session) as CapturedSession;

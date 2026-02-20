@@ -101,6 +101,19 @@ export function buildLayers(session: CapturedSession): PriorityLayer[] {
     layers.push({ name: "PROJECT CONTEXT", priority: 4, content, tokens: estimateTokens(content) });
   }
 
+  // Priority 4.5: TOOL ACTIVITY
+  if (session.toolActivity && session.toolActivity.length > 0) {
+    const lines: string[] = ["## TOOL ACTIVITY"];
+    for (const tool of session.toolActivity) {
+      const samplesStr = tool.samples.length > 0
+        ? tool.samples.map((s) => `\`${s}\``).join(" . ")
+        : "";
+      lines.push(`- **${tool.name}** (x${tool.count})${samplesStr ? ": " + samplesStr : ""}`);
+    }
+    const content = lines.join("\n");
+    layers.push({ name: "TOOL ACTIVITY", priority: 4.5, content, tokens: estimateTokens(content) });
+  }
+
   // Priority 5: SESSION OVERVIEW
   {
     const lines: string[] = ["## SESSION OVERVIEW"];

@@ -8,6 +8,7 @@ import { BaseAdapter } from "../base-adapter.js";
 import { analyzeConversation } from "../../core/conversation-analyzer.js";
 import { extractProjectContext } from "../../core/project-context.js";
 import { validateSession } from "../../core/validation.js";
+import { SummaryCollector, shellSummary, fileSummary } from "../../core/tool-summarizer.js";
 import type {
   AgentId,
   CapturedSession,
@@ -85,6 +86,7 @@ export class CodexAdapter extends BaseAdapter {
 
     const messages: ConversationMessage[] = [];
     const fileChanges = new Map<string, FileChange>();
+    const collector = new SummaryCollector();
     let totalTokens = 0;
     let sessionStartedAt: string | undefined;
     let lastAssistantMessage = "";
@@ -128,6 +130,7 @@ export class CodexAdapter extends BaseAdapter {
           toolName: responseItem.name,
           timestamp,
         });
+        this.recordToolActivity(collector, responseItem.name, input);
         this.recordFileChange(fileChanges, responseItem.name, input);
       }
 
@@ -187,6 +190,7 @@ export class CodexAdapter extends BaseAdapter {
           toolName: entry.name,
           timestamp,
         });
+        this.recordToolActivity(collector, entry.name, input);
         this.recordFileChange(fileChanges, entry.name, input);
       }
 
@@ -253,6 +257,7 @@ export class CodexAdapter extends BaseAdapter {
           : undefined,
         blockers: analysis.blockers,
       },
+      toolActivity: collector.getSummaries(),
     };
     return validateSession(session) as CapturedSession;
   }
@@ -625,6 +630,29 @@ export class CodexAdapter extends BaseAdapter {
       diff,
       language: ext || undefined,
     });
+  }
+
+  private recordToolActivity(
+    collector: SummaryCollector,
+    toolNameRaw: string,
+    input: unknown,
+  ): void {
+    const name = toolNameRaw.toLowerCase();
+    const payload = input && typeof input === "object" ? input as Record<string, unknown> : undefined;
+    if (name.includes("shell") || name.includes("exec") || name.includes("bash")) {
+      collector.record("Bash", shellSummary(String(payload?.command ?? "")));
+    } else if (name.includes("write") || name.includes("create")) {
+      const fp = (payload?.path ?? payload?.file_path) as string | undefined;
+      collector.record("Write", fileSummary(fp ?? "file", "create"));
+    } else if (name.includes("edit") || name.includes("patch")) {
+      const fp = (payload?.path ?? payload?.file_path) as string | undefined;
+      collector.record("Edit", fileSummary(fp ?? "file", "edit"));
+    } else if (name.includes("read")) {
+      const fp = (payload?.path ?? payload?.file_path) as string | undefined;
+      collector.record("Read", fileSummary(fp ?? "file", "read"));
+    } else {
+      collector.record(toolNameRaw, toolNameRaw.toLowerCase());
+    }
   }
 
   private extractPreview(entry: CodexEntry): string | undefined {

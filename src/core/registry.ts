@@ -40,6 +40,54 @@ export const AGENT_REGISTRY: Record<AgentId, AgentMeta> = {
     usableTokens: 120_000,
     memoryFiles: ["AGENTS.md", "~/.codex/AGENTS.md"],
   },
+  copilot: {
+    id: "copilot",
+    name: "GitHub Copilot CLI",
+    storagePaths: {
+      linux: "~/.copilot/session-state/",
+      darwin: "~/.copilot/session-state/",
+      win32: "~/.copilot/session-state/",
+    },
+    contextWindow: 128_000,
+    usableTokens: 76_000,
+    memoryFiles: [],
+  },
+  gemini: {
+    id: "gemini",
+    name: "Gemini CLI",
+    storagePaths: {
+      linux: "~/.gemini/tmp/",
+      darwin: "~/.gemini/tmp/",
+      win32: "~/.gemini/tmp/",
+    },
+    contextWindow: 1_000_000,
+    usableTokens: 500_000,
+    memoryFiles: [],
+  },
+  opencode: {
+    id: "opencode",
+    name: "OpenCode",
+    storagePaths: {
+      linux: "~/.local/share/opencode/",
+      darwin: "~/.local/share/opencode/",
+      win32: "~/.local/share/opencode/",
+    },
+    contextWindow: 200_000,
+    usableTokens: 120_000,
+    memoryFiles: [],
+  },
+  droid: {
+    id: "droid",
+    name: "Factory Droid",
+    storagePaths: {
+      linux: "~/.factory/sessions/",
+      darwin: "~/.factory/sessions/",
+      win32: "~/.factory/sessions/",
+    },
+    contextWindow: 200_000,
+    usableTokens: 120_000,
+    memoryFiles: [],
+  },
 };
 
 /**

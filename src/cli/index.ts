@@ -5,13 +5,15 @@ import chalk from "chalk";
 import ora from "ora";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { detectAgents, autoDetectSource, getAdapter } from "../adapters/index.js";
+import { detectAgents, autoDetectSource, getAdapter, getAllAdapters } from "../adapters/index.js";
 import { compress } from "../core/compression.js";
 import { extractProjectContext } from "../core/project-context.js";
 import { buildResumePrompt } from "../core/prompt-builder.js";
 import { AGENT_REGISTRY, getUsableTokenBudget } from "../core/registry.js";
 import { Watcher } from "../core/watcher.js";
-import type { AgentId, WatcherEvent } from "../types/index.js";
+import { launchTool, getInstalledTools } from "../core/launcher.js";
+import { getCachedIndex, writeCachedIndex, type CachedSessionEntry } from "../core/session-cache.js";
+import type { AgentId, SessionInfo, WatcherEvent } from "../types/index.js";
 import {
   resolveOutputPath,
   relativeTime,
@@ -37,7 +39,14 @@ program
   .description(
     "Capture your AI coding agent session and continue in a different agent."
   )
-  .version("0.5.0");
+  .version("1.0.0");
+
+// --- supported agents list for error messages ---
+function supportedAgentsList(): string {
+  return Object.values(AGENT_REGISTRY)
+    .map((m) => `  ${chalk.dim("•")} ${m.name} ${chalk.dim(`(${m.storagePaths[process.platform] || m.id})`)}`)
+    .join("\n");
+}
 
 // --- runHandoff (extracted for default command) ---
 async function runHandoff(options: {
@@ -50,6 +59,7 @@ async function runHandoff(options: {
   clipboard?: boolean;
   output?: string;
   verbose?: boolean;
+  launch?: boolean;
 }) {
   try {
     if (options.verbose) verbose = true;
@@ -82,9 +92,7 @@ async function runHandoff(options: {
               "coding agents on your system.",
               "",
               "Supported agents:",
-              `  ${chalk.dim("•")} Claude Code ${chalk.dim("(~/.claude/projects/)")}`,
-              `  ${chalk.dim("•")} Cursor ${chalk.dim("(~/.config/Cursor/...)")}`,
-              `  ${chalk.dim("•")} Codex CLI ${chalk.dim("(~/.codex/sessions/)")}`,
+              supportedAgentsList(),
               "",
               "Install one and try again.",
             ].join("\n")
@@ -164,6 +172,9 @@ async function runHandoff(options: {
       }
       lines.push(`${chalk.dim("Target:")}     ${target}`);
       lines.push(`${chalk.dim("Resume:")}     ${resume.length} chars`);
+      if (session.toolActivity && session.toolActivity.length > 0) {
+        lines.push(`${chalk.dim("Tools:")}      ${session.toolActivity.map((t) => `${t.name}(${t.count})`).join(", ")}`);
+      }
       console.log();
       console.log(
         formatBox(lines.join("\n"))
@@ -206,6 +217,11 @@ async function runHandoff(options: {
       `${chalk.dim("Messages:")}   ${session.conversation.messageCount}`,
       `${chalk.dim("Tokens:")}     ${compressed.totalTokens} / ${budget} ${chalk.dim(`(${pct}%)`)}`,
     ];
+    if (session.toolActivity && session.toolActivity.length > 0) {
+      summaryLines.push(
+        `${chalk.dim("Tools:")}      ${session.toolActivity.map((t) => `${t.name}(${t.count})`).join(", ")}`
+      );
+    }
     if (verbose && compressed.includedLayers.length > 0) {
       summaryLines.push(
         `${chalk.dim("Included:")}   ${compressed.includedLayers.join(", ")}`
@@ -230,7 +246,18 @@ async function runHandoff(options: {
     console.log();
     console.log(formatBox(summaryLines.join("\n")));
     console.log();
-    console.log(`  ${hint("Paste the clipboard into your target agent to continue")}`);
+
+    // 9. Auto-launch target tool if --launch
+    if (options.launch && target !== "clipboard" && target !== "file") {
+      console.log(`  ${chalk.cyan("Launching")} ${target}...`);
+      try {
+        launchTool(target as AgentId, resume, { projectPath });
+      } catch (err) {
+        console.log(`  ${chalk.yellow("Could not launch:")} ${(err as Error).message}`);
+      }
+    } else {
+      console.log(`  ${hint("Paste the clipboard into your target agent to continue")}`);
+    }
     console.log();
   } catch (err) {
     console.log();
@@ -245,6 +272,140 @@ async function runHandoff(options: {
     );
     process.exit(3);
   }
+}
+
+// --- interactive TUI ---
+async function runInteractiveTUI() {
+  let clack: typeof import("@clack/prompts");
+  try {
+    clack = await import("@clack/prompts");
+  } catch {
+    // @clack/prompts not installed — fall back to intro
+    console.log(intro());
+    return;
+  }
+
+  clack.intro(chalk.cyan.bold("braindump"));
+
+  const spinner = ora("Loading sessions...").start();
+
+  // Gather sessions from all adapters in parallel
+  const allSessions: CachedSessionEntry[] = [];
+  const cached = getCachedIndex();
+  if (cached) {
+    allSessions.push(...cached);
+    spinner.succeed(`Found ${allSessions.length} sessions (cached)`);
+  } else {
+    const adapters = getAllAdapters();
+    const results = await Promise.allSettled(
+      adapters.map(async (adapter) => {
+        const detected = await adapter.detect();
+        if (!detected) return [];
+        const sessions = await adapter.listSessions();
+        return sessions.map((s) => ({ ...s, agentId: adapter.agentId }));
+      })
+    );
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        allSessions.push(...result.value);
+      }
+    }
+    // Sort by recency
+    allSessions.sort((a, b) => {
+      const aTime = a.lastActiveAt || a.startedAt || "";
+      const bTime = b.lastActiveAt || b.startedAt || "";
+      return bTime.localeCompare(aTime);
+    });
+    // Cache for next time
+    if (allSessions.length > 0) {
+      writeCachedIndex(allSessions);
+    }
+    spinner.succeed(`Found ${allSessions.length} sessions`);
+  }
+
+  if (allSessions.length === 0) {
+    clack.outro("No sessions found. Run an AI coding agent first.");
+    return;
+  }
+
+  // CWD sessions
+  const cwd = process.cwd();
+  const cwdSessions = allSessions.filter(
+    (s) => s.projectPath && s.projectPath.replace(/[\\/]+$/, "") === cwd.replace(/[\\/]+$/, ""),
+  );
+
+  if (cwdSessions.length > 0) {
+    console.log(`  ${chalk.green(`Found ${cwdSessions.length} sessions in this directory`)}`);
+  }
+
+  // Filter step
+  const filterChoice = await clack.select({
+    message: "Which sessions?",
+    options: [
+      ...(cwdSessions.length > 0
+        ? [{ value: "cwd" as const, label: `This directory (${cwdSessions.length})` }]
+        : []),
+      { value: "all" as const, label: `All sessions (${allSessions.length})` },
+    ],
+  });
+
+  if (clack.isCancel(filterChoice)) {
+    clack.cancel("Cancelled.");
+    return;
+  }
+
+  const filteredSessions = filterChoice === "cwd" ? cwdSessions : allSessions;
+  const displaySessions = filteredSessions.slice(0, 20);
+
+  // Session picker
+  const sessionChoice = await clack.select({
+    message: "Pick a session",
+    options: displaySessions.map((s) => ({
+      value: s,
+      label: `[${s.agentId}] ${s.lastActiveAt ? relativeTime(s.lastActiveAt) : "unknown"} ${s.id.slice(0, 12)}`,
+      hint: s.preview ? s.preview.slice(0, 60) : undefined,
+    })),
+  });
+
+  if (clack.isCancel(sessionChoice)) {
+    clack.cancel("Cancelled.");
+    return;
+  }
+
+  const selected = sessionChoice as CachedSessionEntry;
+
+  // Target picker — show installed tools (excluding source)
+  const installedTools = getInstalledTools(selected.agentId);
+  const targetOptions = [
+    { value: "file" as const, label: "File (.handoff/RESUME.md)" },
+    { value: "clipboard" as const, label: "Clipboard" },
+    ...installedTools.map((t) => ({
+      value: t.id,
+      label: `${AGENT_REGISTRY[t.id].name} (auto-launch)`,
+    })),
+  ];
+
+  const targetChoice = await clack.select({
+    message: "Target",
+    options: targetOptions,
+  });
+
+  if (clack.isCancel(targetChoice)) {
+    clack.cancel("Cancelled.");
+    return;
+  }
+
+  const target = targetChoice as string;
+  const shouldLaunch = target !== "file" && target !== "clipboard" && installedTools.some((t) => t.id === target);
+
+  // Run handoff
+  await runHandoff({
+    source: selected.agentId,
+    target,
+    session: selected.id,
+    project: selected.projectPath || cwd,
+    launch: shouldLaunch,
+  });
 }
 
 // --- detect ---
@@ -273,9 +434,7 @@ program
               "coding agents on your system.",
               "",
               "Supported agents:",
-              `  ${chalk.dim("•")} Claude Code ${chalk.dim("(~/.claude/projects/)")}`,
-              `  ${chalk.dim("•")} Cursor ${chalk.dim("(~/.config/Cursor/...)")}`,
-              `  ${chalk.dim("•")} Codex CLI ${chalk.dim("(~/.codex/sessions/)")}`,
+              supportedAgentsList(),
               "",
               "Install one and try again.",
             ].join("\n")
@@ -304,8 +463,10 @@ program
 program
   .command("list")
   .description("List recent sessions across detected agents")
-  .option("-s, --source <agent>", "Filter by agent (claude-code, cursor, codex)")
+  .option("-s, --source <agent>", "Filter by agent")
   .option("-l, --limit <n>", "Max sessions to show", "10")
+  .option("--json", "Output as JSON array")
+  .option("--jsonl", "Output as JSONL (one JSON object per line)")
   .action(async (options) => {
     try {
       const limit = parseInt(options.limit, 10) || 10;
@@ -313,47 +474,80 @@ program
         ? [options.source as AgentId]
         : (Object.keys(AGENT_REGISTRY) as AgentId[]);
 
-      let totalShown = 0;
+      const allSessions: CachedSessionEntry[] = [];
+
       for (const agentId of agentIds) {
         const adapter = getAdapter(agentId);
         if (!adapter) continue;
 
-        let sessions;
+        let sessions: SessionInfo[];
         try {
           sessions = await adapter.listSessions();
         } catch {
           continue;
         }
 
-        if (sessions.length === 0) continue;
-
-        console.log();
-        console.log(`  ${chalk.bold("Recent Sessions")}`);
-        console.log();
-        console.log(`  ${chalk.bold(AGENT_REGISTRY[agentId].name)}`);
-        const toShow = sessions.slice(0, limit - totalShown);
-        for (let i = 0; i < toShow.length; i++) {
-          const s = toShow[i];
-          const isLast = i === toShow.length - 1;
-          const prefix = isLast ? "  └─" : "  ├─";
-          const idShort = chalk.cyan(s.id.slice(0, 12));
-          const time = s.lastActiveAt || s.startedAt
-            ? chalk.dim(relativeTime(s.lastActiveAt || s.startedAt || ""))
-            : chalk.dim("unknown");
-          const msgs = s.messageCount != null ? chalk.yellow(`${s.messageCount} msgs`) : "";
-          console.log(`  ${prefix} ${idShort}  ${time}   ${msgs}`);
-          totalShown++;
+        for (const s of sessions) {
+          allSessions.push({ ...s, agentId });
         }
-        if (totalShown >= limit) break;
       }
+
+      // Sort by recency
+      allSessions.sort((a, b) => {
+        const aTime = a.lastActiveAt || a.startedAt || "";
+        const bTime = b.lastActiveAt || b.startedAt || "";
+        return bTime.localeCompare(aTime);
+      });
+
+      const limited = allSessions.slice(0, limit);
+
+      // JSON output modes
+      if (options.json) {
+        console.log(JSON.stringify(limited, null, 2));
+        return;
+      }
+
+      if (options.jsonl) {
+        for (const s of limited) {
+          console.log(JSON.stringify(s));
+        }
+        return;
+      }
+
+      // Cache for TUI
+      if (allSessions.length > 0) {
+        writeCachedIndex(allSessions);
+      }
+
+      // Human-readable output
+      if (limited.length === 0) {
+        console.log(chalk.yellow("No sessions found."));
+        return;
+      }
+
+      console.log();
+      console.log(`  ${chalk.bold("Recent Sessions")}`);
       console.log();
 
-      if (totalShown === 0) {
-        console.log(chalk.yellow("No sessions found."));
-      } else {
-        console.log(`  ${hint("Run 'braindump --session <id>' to handoff a specific session")}`);
-        console.log();
+      let currentAgent = "";
+      for (let i = 0; i < limited.length; i++) {
+        const s = limited[i];
+        if (s.agentId !== currentAgent) {
+          currentAgent = s.agentId;
+          console.log(`  ${chalk.bold(AGENT_REGISTRY[s.agentId].name)}`);
+        }
+        const isLast = i === limited.length - 1 || limited[i + 1]?.agentId !== currentAgent;
+        const prefix = isLast ? "  └─" : "  ├─";
+        const idShort = chalk.cyan(s.id.slice(0, 12));
+        const time = s.lastActiveAt || s.startedAt
+          ? chalk.dim(relativeTime(s.lastActiveAt || s.startedAt || ""))
+          : chalk.dim("unknown");
+        const msgs = s.messageCount != null ? chalk.yellow(`${s.messageCount} msgs`) : "";
+        console.log(`  ${prefix} ${idShort}  ${time}   ${msgs}`);
       }
+      console.log();
+      console.log(`  ${hint("Run 'braindump --session <id>' to handoff a specific session")}`);
+      console.log();
     } catch (err) {
       console.log();
       console.log(
@@ -467,6 +661,7 @@ program
   .option("--dry-run", "Preview what would be captured without writing files")
   .option("--no-clipboard", "Skip clipboard copy")
   .option("-o, --output <path>", "Custom output path for RESUME.md")
+  .option("--launch", "Auto-launch target tool after handoff")
   .option("-v, --verbose", "Show detailed debug output")
   .action(async (options) => {
     await runHandoff(options);
@@ -612,29 +807,36 @@ program
   .command("info")
   .description("Show agent storage paths, context window sizes, and config")
   .action(async () => {
-    console.log(banner("0.5.0"));
+    console.log(banner("1.0.0"));
     for (const meta of Object.values(AGENT_REGISTRY)) {
       const storagePath = meta.storagePaths[process.platform] || "N/A";
       console.log(`  ${chalk.bold(meta.name)} ${chalk.dim(`(${meta.id})`)}`);
       console.log(`    ${chalk.dim("Storage:")}        ${storagePath}`);
       console.log(`    ${chalk.dim("Context window:")} ${meta.contextWindow.toLocaleString()} tokens`);
       console.log(`    ${chalk.dim("Usable budget:")}  ${meta.usableTokens.toLocaleString()} tokens`);
-      console.log(`    ${chalk.dim("Memory files:")}   ${meta.memoryFiles.join(", ")}`);
+      console.log(`    ${chalk.dim("Memory files:")}   ${meta.memoryFiles.join(", ") || "none"}`);
       console.log();
     }
   });
 
-// --- default: show intro when no subcommand given ---
+// --- default: interactive TUI when no subcommand given in TTY ---
 const args = process.argv.slice(2);
 const subcommands = [...program.commands.map((c) => c.name()), "help"];
 const hasSubcommand = args.length > 0 && subcommands.includes(args[0]);
 const hasHelpOrVersion = args.includes("--help") || args.includes("-h") || args.includes("--version") || args.includes("-V");
 
 if (args.length === 0) {
-  // No args — show intro
-  console.log(intro());
+  if (process.stdout.isTTY) {
+    // Interactive TUI
+    runInteractiveTUI().catch((err) => {
+      console.error(chalk.red((err as Error).message));
+      process.exit(1);
+    });
+  } else {
+    // Non-TTY — show intro text
+    console.log(intro());
+  }
 } else if (!hasSubcommand && !hasHelpOrVersion) {
-  // Unknown subcommand — show help
   program.parse();
 } else {
   program.parse();

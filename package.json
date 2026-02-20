@@ -1,6 +1,6 @@
 {
   "name": "braindump",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "description": "A CLI tool that captures your AI coding agent session and generates a portable resume prompt so you can seamlessly continue in a different agent.",
   "type": "module",
   "main": "dist/cli/index.js",
@@ -23,6 +23,10 @@
     "claude",
     "cursor",
     "codex",
+    "copilot",
+    "gemini",
+    "opencode",
+    "droid",
     "cli",
     "context",
     "session",
@@ -51,6 +55,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@clack/prompts": "^1.0.1",
     "better-sqlite3": "^11.0.0",
     "boxen": "^8.0.1",
     "chalk": "^5.3.0",
@@ -58,6 +63,7 @@
     "commander": "^12.0.0",
     "glob": "^11.0.0",
     "ora": "^8.0.0",
+    "yaml": "^2.8.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {
