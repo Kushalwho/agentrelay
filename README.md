@@ -35,7 +35,7 @@ npm link
 ## Quick Start
 
 ```bash
-# Interactive mode — run with no args in a terminal
+# Interactive mode — gradient logo, agent dashboard, arrow-key menu
 braindump
 
 # Detect installed agents
@@ -43,6 +43,9 @@ braindump detect
 
 # Full handoff — capture, compress, generate resume prompt
 braindump handoff
+
+# Shortcut — handoff a specific session (no subcommand needed)
+braindump --session <id>
 
 # Target a specific agent for the resume format
 braindump handoff --target cursor
@@ -65,13 +68,39 @@ braindump watch
 
 ## Interactive TUI
 
-Run `braindump` with no arguments in a terminal to get an interactive session picker:
+Run `braindump` with no arguments in a terminal to get the interactive dashboard:
 
-1. Scans all 7 agents for sessions
-2. Lets you filter by project or agent
-3. Pick a session from a scrollable list
-4. Choose your target tool
-5. Auto-launches the target with the handoff prompt
+```
+    __               _           __
+   / /_  _________ _(_)___  ____/ /_  ______ ___  ____       ← violet
+  / __ \/ ___/ __ `/ / __ \/ __  / / / / __ `__ \/ __ \
+ / /_/ / /  / /_/ / / / / / /_/ / /_/ / / / / / / /_/ /
+/_.___/_/   \__,_/_/_/ /_/\__,_/\__,_/_/ /_/ /_/ .___/      ← blue
+                                               /_/
+
+  braindump v1.1.1 | Seamless AI agent handoffs
+
+  Agents
+  ● Claude Code    12 sessions   2m ago
+  ● Cursor          3 sessions   1h ago
+  ○ Codex          installed
+  × Copilot        not found
+
+  What would you like to do?
+
+  ❯ Handoff session       Transfer to another agent
+    List sessions         Browse all captured sessions
+    Detect agents         Scan system for AI tools
+    Watch mode            Monitor for rate limits
+    Help                  Show commands & options
+```
+
+Features:
+- Gradient ASCII logo (violet → blue)
+- Live agent dashboard — scans all 7 agents for sessions, shows counts and recency
+- Arrow-key and vim (j/k) navigation with scroll indicators
+- Custom purple-themed `--help` output
+- No external TUI dependencies — raw ANSI escape codes
 
 ## Commands
 
@@ -87,6 +116,8 @@ braindump info                           Show agent paths and config
 ```
 
 ### Handoff Options
+
+These flags work both as `braindump handoff --flag` and as top-level shortcuts `braindump --flag`:
 
 ```
 -s, --source <agent>    Source agent. Auto-detected if omitted.
@@ -204,19 +235,22 @@ src/
 │   ├── file-provider.ts       # Writes .handoff/RESUME.md
 │   └── clipboard-provider.ts  # Copies to system clipboard
 ├── types/index.ts             # All TypeScript interfaces
-└── cli/index.ts               # Commander.js CLI entry point
+└── cli/
+    ├── index.ts               # Commander.js CLI entry point
+    ├── tui.ts                 # Custom ANSI select prompt (no deps)
+    └── utils.ts               # Colors, gradient logo, dashboard, helpers
 ```
 
 ## Tests
 
-125 tests passing across 15 test files:
+139 tests passing across 13 test files:
 - Adapter tests for all 7 agents with real JSONL/SQLite/YAML/JSON parsing
 - Compression engine tests across all priority layers
 - Conversation analyzer tests
 - Prompt builder tests including target-agent hints
 - Watcher tests with mocked adapters and fake timers
 - End-to-end handoff flow integration tests
-- Validation schema tests
+- TUI tests for key parsing and option rendering
 
 ## CI
 
@@ -225,6 +259,8 @@ GitHub Actions runs on every PR and push to main:
 - Tests (vitest)
 - Build
 - Node.js 18, 20, 22
+
+Auto-publishes to npm on `v*` tags with provenance.
 
 ## License
 

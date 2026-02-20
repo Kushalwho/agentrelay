@@ -44,7 +44,17 @@ program
   .description(
     "Capture your AI coding agent session and continue in a different agent."
   )
-  .version("1.1.0");
+  .version("1.1.1")
+  .option("-s, --source <agent>", "Source agent")
+  .option("-t, --target <target>", "Target agent or delivery method")
+  .option("--session <id>", "Specific session ID")
+  .option("-p, --project <path>", "Project path")
+  .option("--tokens <n>", "Token budget override")
+  .option("--dry-run", "Preview what would be captured without writing files")
+  .option("--no-clipboard", "Skip clipboard copy")
+  .option("-o, --output <path>", "Custom output path for RESUME.md")
+  .option("--launch", "Auto-launch target tool after handoff")
+  .option("-v, --verbose", "Show detailed debug output");
 
 // --- supported agents list for error messages ---
 function supportedAgentsList(): string {
@@ -437,7 +447,7 @@ async function runDefaultTUI(): Promise<void> {
   console.log();
   console.log(gradientLogo());
   console.log();
-  console.log(`  braindump v1.0.0 ${chalk.dim("|")} ${chalk.dim("Seamless AI agent handoffs")}`);
+  console.log(`  braindump v1.1.1 ${chalk.dim("|")} ${chalk.dim("Seamless AI agent handoffs")}`);
 
   // Agent dashboard
   const dashSpinner = ora("Scanning agents...").start();
@@ -474,7 +484,7 @@ async function runDefaultTUI(): Promise<void> {
       break;
     case "help":
       console.log(
-        styledHelp("1.1.0", program.commands.map((c) => ({ name: c.name(), description: c.description() || "" })))
+        styledHelp("1.1.1", program.commands.map((c) => ({ name: c.name(), description: c.description() || "" })))
       );
       break;
   }
@@ -882,7 +892,7 @@ program
     console.log();
     console.log(gradientLogo());
     console.log();
-    console.log(`  braindump v1.0.0 ${chalk.dim("|")} ${chalk.dim("Seamless AI agent handoffs")}`);
+    console.log(`  braindump v1.1.1 ${chalk.dim("|")} ${chalk.dim("Seamless AI agent handoffs")}`);
     console.log();
     for (const meta of Object.values(AGENT_REGISTRY)) {
       const storagePath = meta.storagePaths[process.platform] || "N/A";
@@ -901,6 +911,10 @@ const subcommands = [...program.commands.map((c) => c.name()), "help"];
 const hasSubcommand = args.length > 0 && subcommands.includes(args[0]);
 const hasHelpOrVersion = args.includes("--version") || args.includes("-V");
 
+// Detect top-level handoff flags (e.g. `braindump --session <id>`)
+const handoffFlags = ["--session", "--source", "-s", "--target", "-t", "--dry-run", "--launch", "--tokens", "--no-clipboard"];
+const hasHandoffFlag = !hasSubcommand && args.some((a) => handoffFlags.includes(a));
+
 // Custom --help / -h intercept
 if (args.includes("--help") || args.includes("-h")) {
   // If it's a subcommand help, let commander handle it
@@ -908,9 +922,17 @@ if (args.includes("--help") || args.includes("-h")) {
     program.parse();
   } else {
     console.log(
-      styledHelp("1.1.0", program.commands.map((c) => ({ name: c.name(), description: c.description() || "" })))
+      styledHelp("1.1.1", program.commands.map((c) => ({ name: c.name(), description: c.description() || "" })))
     );
   }
+} else if (hasHandoffFlag) {
+  // Top-level flags like --session, --source, etc. → run handoff directly
+  program.parse();
+  const opts = program.opts();
+  runHandoff(opts).catch((err) => {
+    console.error(chalk.red((err as Error).message));
+    process.exit(1);
+  });
 } else if (args.length === 0) {
   if (process.stdout.isTTY) {
     runDefaultTUI().catch((err) => {
